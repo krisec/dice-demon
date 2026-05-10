@@ -12,6 +12,14 @@ Landing page with links to the two tools.
 
 Connect one or more Pixel dice and enter a list of items. Roll to pick a random entry — the rolled face maps proportionally to the list. Supports multiple dice; their faces are summed to produce a single combined roll.
 
+### `/initiative` — Initiative Tracker
+
+Track turn order for tabletop RPG encounters. Add combatants with a name, initiative modifier, and optional max HP. Enter initiative values manually or roll them with a connected Pixel die (d20 + modifier). The list sorts automatically by initiative descending.
+
+- **Turn tracking** — click Next to advance through the order; dead combatants (0 HP) are skipped automatically
+- **HP tracking** — optional per-combatant HP with Damage/Heal buttons and a colour-coded health bar (green → yellow → red)
+- **Persistent** — the last encounter is saved to localStorage and restored on reload
+
 ### `/hammer-of-wilderwood` — Multiplayer Battle Game
 
 A real-time 2–4 player battle game over WebSockets. Each player opens the page on their own device, connects their own Bluetooth die, and joins a shared room via a 4-character room code.
