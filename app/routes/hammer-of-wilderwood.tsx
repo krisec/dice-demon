@@ -41,20 +41,24 @@ function useGameSocket() {
     if (wsRef.current) return;
     const url = import.meta.env.DEV
       ? "ws://localhost:3001"
-      : `ws://${window.location.hostname}:3001`;
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
+      : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:3001`;
+    try {
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
 
-    ws.onopen = () => { setConnected(true); setWsError(null); };
-    ws.onclose = () => { setConnected(false); wsRef.current = null; };
-    ws.onerror = () => setWsError("Could not connect to game server");
+      ws.onopen = () => { setConnected(true); setWsError(null); };
+      ws.onclose = () => { setConnected(false); wsRef.current = null; };
+      ws.onerror = () => setWsError("Could not connect to game server");
 
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data as string) as ServerMessage;
-      if (msg.type === "joined") setMyId(msg.playerId);
-      if (msg.type === "state_update") setRoom(msg.room);
-      if (msg.type === "error") setWsError(msg.message);
-    };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data as string) as ServerMessage;
+        if (msg.type === "joined") setMyId(msg.playerId);
+        if (msg.type === "state_update") setRoom(msg.room);
+        if (msg.type === "error") setWsError(msg.message);
+      };
+    } catch (e) {
+      setWsError(e instanceof Error ? e.message : "Could not connect to game server");
+    }
   }, []);
 
   useEffect(() => { connect(); return () => { wsRef.current?.close(); }; }, [connect]);
