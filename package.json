@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "react-router build",
-    "dev": "react-router dev",
-    "start": "react-router-serve ./build/server/index.js",
+    "build": "react-router build && tsc -p server/tsconfig.json",
+    "dev": "concurrently \"react-router dev\" \"tsx watch ws-server.ts\"",
+    "start": "concurrently \"react-router-serve ./build/server/index.js\" \"node dist-server/ws-server.js\"",
     "typecheck": "react-router typegen && tsc"
   },
   "dependencies": {
@@ -16,7 +16,8 @@
     "isbot": "^5.1.36",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "react-router": "7.15.0"
+    "react-router": "7.15.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@react-router/dev": "7.15.0",
@@ -24,7 +25,10 @@
     "@types/node": "^22",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.2.1",
     "tailwindcss": "^4.2.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vite": "^8.0.3"
   }

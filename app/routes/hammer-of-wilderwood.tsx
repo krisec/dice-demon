@@ -1,21 +1,17 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router";
 import { requestPixel } from "@systemic-games/pixels-web-connect";
 import { usePixelConnect, usePixelEvent } from "@systemic-games/pixels-react";
 import type { Pixel } from "@systemic-games/pixels-web-connect";
 import type { Route } from "./+types/hammer-of-wilderwood";
+import type { RoomState, GamePlayer, GamePhase, ModifierType } from "../../server/game-logic";
+import type { ClientMessage, ServerMessage } from "../../server/protocol";
 
-// ── Constants ────────────────────────────────────────────────────────────────
+// ── Constants (display-only, game logic lives on the server) ─────────────────
 
 const MAX_HP = 250;
-const FIRE_DAMAGE = 8;
-const FIRE_ROLLS = 3;
-const SHIELD_HP = 25;
-const FROST_MS = 8_000;
-const POISON_ROLLS = 3;
-const SPAWN_INTERVAL_MS = 30_000;
 
 const PLAYER_COLORS = [
   { bg: "bg-rose-950/40",    border: "border-rose-500",    bar: "bg-rose-500",    text: "text-rose-400" },
@@ -24,11 +20,6 @@ const PLAYER_COLORS = [
   { bg: "bg-amber-950/40",   border: "border-amber-500",   bar: "bg-amber-500",   text: "text-amber-400" },
 ];
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-type ModifierType = "frost" | "fire" | "poison" | "shield" | "earthquake";
-type GamePhase = "setup" | "playing" | "gameover";
-
 const MODIFIER_INFO: Record<ModifierType, { name: string; emoji: string; cls: string }> = {
   frost:      { name: "Frost",      emoji: "❄️", cls: "bg-blue-500/20 text-blue-300 border-blue-400/40" },
   fire:       { name: "Fire",       emoji: "🔥", cls: "bg-orange-500/20 text-orange-300 border-orange-400/40" },
@@ -36,200 +27,83 @@ const MODIFIER_INFO: Record<ModifierType, { name: string; emoji: string; cls: st
   shield:     { name: "Shield",     emoji: "🛡️", cls: "bg-gray-500/20 text-gray-300 border-gray-400/40" },
   earthquake: { name: "Earthquake", emoji: "⚡", cls: "bg-yellow-500/20 text-yellow-300 border-yellow-400/40" },
 };
-const ALL_MODIFIERS: ModifierType[] = ["frost", "fire", "poison", "shield", "earthquake"];
 
-interface PlayerStatus {
-  frozenUntil: number;
-  burningRolls: number;
-  poisonedRolls: number;
-  shieldHp: number;
-  earthquakeReady: boolean;
-}
+// ── WebSocket hook ────────────────────────────────────────────────────────────
 
-interface GamePlayer {
-  id: number;
-  name: string;
-  hp: number;
-  status: PlayerStatus;
-  modifierMap: Partial<Record<number, ModifierType>>;
-  dieFaceCount: number;
-  lastRoll?: number;
-  eliminated: boolean;
-}
+function useGameSocket() {
+  const wsRef = useRef<WebSocket | null>(null);
+  const [room, setRoom] = useState<RoomState | null>(null);
+  const [myId, setMyId] = useState<number | null>(null);
+  const [wsError, setWsError] = useState<string | null>(null);
+  const [connected, setConnected] = useState(false);
 
-interface GameState {
-  playerCount: number;
-  phase: GamePhase;
-  players: GamePlayer[];
-  logs: string[];
-}
+  const connect = useCallback(() => {
+    if (wsRef.current) return;
+    const url = import.meta.env.DEV
+      ? "ws://localhost:3001"
+      : `ws://${window.location.hostname}:3001`;
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
 
-// ── Pure game logic ──────────────────────────────────────────────────────────
+    ws.onopen = () => { setConnected(true); setWsError(null); };
+    ws.onclose = () => { setConnected(false); wsRef.current = null; };
+    ws.onerror = () => setWsError("Could not connect to game server");
 
-function makePlayer(id: number): GamePlayer {
-  return {
-    id,
-    name: `Player ${id + 1}`,
-    hp: MAX_HP,
-    status: { frozenUntil: 0, burningRolls: 0, poisonedRolls: 0, shieldHp: 0, earthquakeReady: false },
-    modifierMap: {},
-    dieFaceCount: 20,
-    eliminated: false,
-  };
-}
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data as string) as ServerMessage;
+      if (msg.type === "joined") setMyId(msg.playerId);
+      if (msg.type === "state_update") setRoom(msg.room);
+      if (msg.type === "error") setWsError(msg.message);
+    };
+  }, []);
 
-function applyDamage(player: GamePlayer, dmg: number): GamePlayer {
-  if (dmg <= 0) return player;
-  let remaining = dmg;
-  let { shieldHp } = player.status;
-  if (shieldHp > 0) {
-    const absorbed = Math.min(shieldHp, remaining);
-    shieldHp -= absorbed;
-    remaining -= absorbed;
-  }
-  const hp = Math.max(0, player.hp - remaining);
-  return { ...player, hp, eliminated: hp === 0, status: { ...player.status, shieldHp } };
-}
+  useEffect(() => { connect(); return () => { wsRef.current?.close(); }; }, [connect]);
 
-function processRoll(
-  players: GamePlayer[],
-  rollerId: number,
-  face: number,
-  dieFaceCount: number,
-  now: number,
-): { players: GamePlayer[]; logs: string[] } {
-  const roller = players.find(p => p.id === rollerId)!;
-  const logs: string[] = [];
-
-  if (roller.status.frozenUntil > now) {
-    const secs = Math.ceil((roller.status.frozenUntil - now) / 1000);
-    logs.push(`❄️ ${roller.name} is frozen! (${secs}s remaining)`);
-    return { players, logs };
+  function sendMsg(msg: ClientMessage) {
+    if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(msg));
   }
 
-  let ps = players.map(p => ({ ...p, status: { ...p.status } }));
-  const ri = ps.findIndex(p => p.id === rollerId);
-  ps[ri] = { ...ps[ri], lastRoll: face, dieFaceCount };
-
-  // Trigger modifier on this face
-  const mod = ps[ri].modifierMap[face];
-  if (mod) {
-    const info = MODIFIER_INFO[mod];
-    logs.push(`✨ ${roller.name} rolled ${face} — ${info.emoji} ${info.name}!`);
-    const newMap = { ...ps[ri].modifierMap };
-    delete newMap[face];
-    ps[ri] = { ...ps[ri], modifierMap: newMap };
-
-    const oppIdxs = ps.map((p, i) => i).filter(i => ps[i].id !== rollerId && !ps[i].eliminated);
-
-    switch (mod) {
-      case "frost":
-        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, frozenUntil: now + FROST_MS } }; });
-        if (oppIdxs.length) logs.push(`  All opponents frozen for 8s!`);
-        break;
-      case "fire":
-        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, burningRolls: ps[i].status.burningRolls + FIRE_ROLLS } }; });
-        if (oppIdxs.length) logs.push(`  All opponents are burning! (+${FIRE_DAMAGE} dmg × ${FIRE_ROLLS} rolls)`);
-        break;
-      case "poison":
-        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, poisonedRolls: ps[i].status.poisonedRolls + POISON_ROLLS } }; });
-        if (oppIdxs.length) logs.push(`  All opponents poisoned! (−50% dmg × ${POISON_ROLLS} rolls)`);
-        break;
-      case "shield":
-        ps[ri] = { ...ps[ri], status: { ...ps[ri].status, shieldHp: ps[ri].status.shieldHp + SHIELD_HP } };
-        logs.push(`  🛡️ ${roller.name} gains a ${SHIELD_HP} HP shield!`);
-        break;
-      case "earthquake":
-        ps[ri] = { ...ps[ri], status: { ...ps[ri].status, earthquakeReady: true } };
-        logs.push(`  ⚡ ${roller.name} charges an earthquake!`);
-        break;
-    }
-  }
-
-  // Fire DoT tick on roller (they were burned by a previous fire attack)
-  if (ps[ri].status.burningRolls > 0) {
-    const before = ps[ri];
-    ps[ri] = { ...applyDamage(ps[ri], FIRE_DAMAGE), status: { ...ps[ri].status, burningRolls: ps[ri].status.burningRolls - 1 } };
-    const absorbed = FIRE_DAMAGE - (before.hp - ps[ri].hp);
-    const taken = FIRE_DAMAGE - Math.max(0, absorbed);
-    logs.push(`🔥 ${roller.name} takes ${taken} fire damage! (${ps[ri].status.burningRolls} rolls remaining)`);
-    if (ps[ri].eliminated) logs.push(`💀 ${roller.name} was eliminated by fire!`);
-  }
-
-  if (ps[ri].eliminated) return { players: ps, logs };
-
-  // Compute outgoing damage
-  let damage = face;
-  if (ps[ri].status.poisonedRolls > 0) {
-    damage = Math.floor(damage / 2);
-    ps[ri] = { ...ps[ri], status: { ...ps[ri].status, poisonedRolls: ps[ri].status.poisonedRolls - 1 } };
-    logs.push(`☠️ ${roller.name} is poisoned — damage halved to ${damage}`);
-  }
-  if (ps[ri].status.earthquakeReady) {
-    damage *= 2;
-    ps[ri] = { ...ps[ri], status: { ...ps[ri].status, earthquakeReady: false } };
-    logs.push(`⚡ Earthquake! Damage doubled to ${damage}!`);
-  }
-
-  // Deal damage to all living opponents
-  ps
-    .map((p, i) => i)
-    .filter(i => ps[i].id !== rollerId && !ps[i].eliminated)
-    .forEach(oi => {
-      const before = ps[oi];
-      ps[oi] = applyDamage(ps[oi], damage);
-      const shieldAbsorbed = before.status.shieldHp - ps[oi].status.shieldHp;
-      const actualDmg = damage - shieldAbsorbed;
-      if (shieldAbsorbed > 0) logs.push(`🛡️ ${before.name}'s shield absorbed ${shieldAbsorbed} damage!`);
-      logs.push(`⚔️ ${roller.name} rolled ${face} → ${actualDmg} dmg to ${before.name} (${ps[oi].hp}/${MAX_HP} HP)`);
-      if (ps[oi].eliminated) logs.push(`💀 ${before.name} has been eliminated!`);
-    });
-
-  return { players: ps, logs };
+  return { room, myId, wsError, connected, sendMsg };
 }
 
-function spawnModifiers(players: GamePlayer[], playerCount: number): GamePlayer[] {
-  return players.map((p, i) => {
-    if (i >= playerCount || p.eliminated) return p;
-    const faceCount = p.dieFaceCount || 20;
-    const face = 1 + Math.floor(Math.random() * faceCount);
-    const mod = ALL_MODIFIERS[Math.floor(Math.random() * ALL_MODIFIERS.length)];
-    return { ...p, modifierMap: { ...p.modifierMap, [face]: mod } };
-  });
-}
-
-// ── PlayerSlot ───────────────────────────────────────────────────────────────
+// ── PlayerSlot ────────────────────────────────────────────────────────────────
 
 interface SlotProps {
   slotIndex: number;
   player: GamePlayer;
+  isMe: boolean;
   phase: GamePhase;
   now: number;
-  onNameChange: (name: string) => void;
-  onRoll: (face: number, dieFaceCount: number) => void;
+  sendMsg: (msg: ClientMessage) => void;
 }
 
-function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: SlotProps) {
+function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps) {
   const [pixel, setPixel] = useState<Pixel | undefined>();
   const [reqErr, setReqErr] = useState<Error | undefined>();
   const [connStatus, curPixel, dispatch, connErr] = usePixelConnect(pixel);
   const [rollFace] = usePixelEvent(pixel, "rollFace");
-  const onRollRef = useRef(onRoll);
-  onRollRef.current = onRoll;
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
+  const isConnected = connStatus === "ready";
+  const isBusy = connStatus === "connecting" || connStatus === "identifying" || connStatus === "disconnecting";
+  const dieName = curPixel?.name || "";
+
+  // Notify server when die connects/disconnects
   useEffect(() => {
-    if (rollFace && curPixel && phaseRef.current === "playing") {
-      onRollRef.current(rollFace.face, curPixel.dieFaceCount);
-    }
+    if (!isMe) return;
+    sendMsg({ type: "die_status", connected: isConnected, dieName: dieName || undefined });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected, dieName]);
+
+  useEffect(() => {
+    if (!isMe || !rollFace || !curPixel) return;
+    if (phaseRef.current !== "playing") return;
+    sendMsg({ type: "roll", face: rollFace.face, dieFaceCount: curPixel.dieFaceCount });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rollFace]);
 
   const colors = PLAYER_COLORS[slotIndex];
-  const isConnected = connStatus === "ready";
-  const isBusy = connStatus === "connecting" || connStatus === "identifying" || connStatus === "disconnecting";
-  const dieName = curPixel?.name || `Die ${slotIndex + 1}`;
   const frozenSecs = player.status.frozenUntil > now ? Math.ceil((player.status.frozenUntil - now) / 1000) : 0;
 
   async function connect() {
@@ -240,31 +114,31 @@ function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: Slo
 
   function disconnect() { dispatch("disconnect"); setPixel(undefined); }
 
-  // ── Setup view ──
-  if (phase === "setup") {
+  // ── Setup / lobby view ──
+  if (phase === "lobby-waiting") {
     return (
       <div className={`rounded-2xl border ${colors.border} ${colors.bg} p-5 space-y-3 w-48`}>
-        <p className={`text-xs font-semibold uppercase tracking-widest ${colors.text}`}>Player {slotIndex + 1}</p>
-        <input
-          type="text"
-          value={player.name}
-          onChange={e => onNameChange(e.target.value)}
-          placeholder={`Player ${slotIndex + 1}`}
-          className="w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:border-gray-400 focus:outline-none"
-        />
-        {!pixel ? (
-          <button onClick={connect} className="w-full rounded-lg bg-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-600">
-            Connect Die
-          </button>
-        ) : (
-          <div className="space-y-1.5">
-            <p className={`text-xs font-medium ${isConnected ? "text-green-400" : "text-gray-400"}`}>
-              {isConnected ? `✓ ${dieName}` : (connStatus ?? "Connecting…")}
-            </p>
-            <button onClick={disconnect} disabled={isBusy} className="w-full rounded-lg border border-gray-700 px-3 py-1 text-xs text-gray-500 hover:bg-gray-800 disabled:opacity-40">
-              Disconnect
+        <p className={`text-xs font-semibold uppercase tracking-widest ${colors.text}`}>{player.name}</p>
+        {isMe && (
+          !pixel ? (
+            <button onClick={connect} className="w-full rounded-lg bg-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-600">
+              Connect Die
             </button>
-          </div>
+          ) : (
+            <div className="space-y-1.5">
+              <p className={`text-xs font-medium ${isConnected ? "text-green-400" : "text-gray-400"}`}>
+                {isConnected ? `✓ ${dieName || "Die"}` : (connStatus ?? "Connecting…")}
+              </p>
+              <button onClick={disconnect} disabled={isBusy} className="w-full rounded-lg border border-gray-700 px-3 py-1 text-xs text-gray-500 hover:bg-gray-800 disabled:opacity-40">
+                Disconnect
+              </button>
+            </div>
+          )
+        )}
+        {!isMe && (
+          <p className={`text-xs ${player.dieConnected ? "text-green-400" : "text-gray-500"}`}>
+            {player.dieConnected ? `✓ ${player.dieName || "Die connected"}` : "No die connected"}
+          </p>
         )}
         {(reqErr ?? connErr) && <p className="text-xs text-red-400">{(reqErr ?? connErr)!.message}</p>}
       </div>
@@ -289,7 +163,6 @@ function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: Slo
         {player.eliminated && <span className="text-xs font-semibold text-red-500">ELIMINATED</span>}
       </div>
 
-      {/* HP bar */}
       <div>
         <div className="mb-1 flex justify-between text-xs text-gray-500">
           <span>HP</span><span>{player.hp}/{MAX_HP}</span>
@@ -299,7 +172,6 @@ function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: Slo
         </div>
       </div>
 
-      {/* Status effects */}
       {(player.status.shieldHp > 0 || player.status.burningRolls > 0 || player.status.poisonedRolls > 0 || player.status.earthquakeReady) && (
         <div className="flex flex-wrap gap-1">
           {player.status.shieldHp > 0 && <span className="rounded border border-gray-400/40 bg-gray-500/20 px-1.5 py-0.5 text-xs text-gray-300">🛡️ {player.status.shieldHp}</span>}
@@ -309,7 +181,6 @@ function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: Slo
         </div>
       )}
 
-      {/* Last roll */}
       {player.lastRoll !== undefined && (
         <div className="flex items-center gap-2">
           <div className={`flex h-9 w-9 items-center justify-center rounded-lg border ${colors.border} text-lg font-bold text-white`}>
@@ -319,7 +190,6 @@ function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: Slo
         </div>
       )}
 
-      {/* Modifier map */}
       {modEntries.length > 0 && (
         <div>
           <p className="mb-1 text-xs text-gray-600">Face modifiers</p>
@@ -333,8 +203,7 @@ function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: Slo
         </div>
       )}
 
-      {/* Die connection */}
-      {!player.eliminated && (
+      {!player.eliminated && isMe && (
         <div className="border-t border-gray-800 pt-2">
           {!pixel ? (
             <button onClick={connect} className="w-full rounded-lg bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">
@@ -343,7 +212,7 @@ function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: Slo
           ) : (
             <div className="flex items-center justify-between">
               <span className={`text-xs ${isConnected ? "text-green-400" : "text-gray-500"}`}>
-                {isConnected ? `✓ ${dieName}` : (connStatus ?? "—")}
+                {isConnected ? `✓ ${dieName || "Die"}` : (connStatus ?? "—")}
               </span>
               <button onClick={disconnect} disabled={isBusy} className="text-xs text-gray-600 hover:text-gray-400 disabled:opacity-40">
                 ×
@@ -353,102 +222,192 @@ function PlayerSlot({ slotIndex, player, phase, now, onNameChange, onRoll }: Slo
           {(reqErr ?? connErr) && <p className="mt-1 text-xs text-red-400">{(reqErr ?? connErr)!.message}</p>}
         </div>
       )}
+      {!player.eliminated && !isMe && (
+        <div className="border-t border-gray-800 pt-2">
+          <p className={`text-xs ${player.dieConnected ? "text-green-400" : "text-gray-500"}`}>
+            {player.dieConnected ? `✓ ${player.dieName || "Die connected"}` : "No die connected"}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── Main game component ───────────────────────────────────────────────────────
 
-const INITIAL_PLAYERS = [0, 1, 2, 3].map(makePlayer);
-
 function HammerGame() {
-  const [state, setState] = useState<GameState>({
-    playerCount: 2,
-    phase: "setup",
-    players: INITIAL_PLAYERS,
-    logs: [],
-  });
+  const { room, myId, wsError, connected, sendMsg } = useGameSocket();
   const [now, setNow] = useState(Date.now());
+  const [lobbyName, setLobbyName] = useState("");
+  const [joinKey, setJoinKey] = useState("");
+  const [lobbyError, setLobbyError] = useState<string | null>(null);
 
+  // Tick for freeze countdowns
   useEffect(() => {
-    if (state.phase !== "playing") return;
+    if (room?.phase !== "playing") return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [state.phase]);
+  }, [room?.phase]);
 
+  // Show server errors briefly
   useEffect(() => {
-    if (state.phase !== "playing") return;
-    const id = setInterval(() => {
-      setState(prev => {
-        if (prev.phase !== "playing") return prev;
-        const players = spawnModifiers(prev.players, prev.playerCount);
-        return { ...prev, players, logs: ["✨ New modifiers spawned!", ...prev.logs].slice(0, 50) };
-      });
-    }, SPAWN_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [state.phase]);
+    if (!wsError) return;
+    setLobbyError(wsError);
+  }, [wsError]);
 
-  function handleRoll(playerId: number, face: number, dieFaceCount: number) {
-    setState(prev => {
-      if (prev.phase !== "playing") return prev;
-      const { players, logs: newLogs } = processRoll(prev.players, playerId, face, dieFaceCount, Date.now());
-      const logs = [...newLogs, ...prev.logs].slice(0, 50);
-      const alive = players.filter((p, i) => i < prev.playerCount && !p.eliminated);
-      const phase: GamePhase = alive.length <= 1 ? "gameover" : "playing";
-      return { ...prev, players, logs, phase };
-    });
+  const phase = room?.phase ?? "lobby-entry";
+  const myPlayer = room?.players.find(p => p.id === myId);
+  const mySlotIndex = room?.players.findIndex(p => p.id === myId) ?? -1;
+  const isHost = room?.hostId === myId;
+  const activePlayers = room?.players ?? [];
+  const allDiceConnected = activePlayers.length >= 2 && activePlayers.every(p => p.dieConnected);
+  const winner = phase === "gameover" ? activePlayers.find(p => !p.eliminated) : undefined;
+
+  // PlayerSlots must stay mounted to preserve Bluetooth across phase transitions
+  const slots = room?.players.map((player, i) => (
+    <PlayerSlot
+      key={player.id}
+      slotIndex={i}
+      player={player}
+      isMe={player.id === myId}
+      phase={phase}
+      now={now}
+      sendMsg={sendMsg}
+    />
+  ));
+
+  // ── Lobby entry ──
+  if (phase === "lobby-entry") {
+    return (
+      <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center">
+        <div className="w-full max-w-sm space-y-8 px-4">
+          <div>
+            <Link to="/" className="text-sm text-gray-500 hover:text-gray-300">← Back</Link>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight">Hammer of Wilderwood</h1>
+            <p className="mt-1 text-sm text-gray-500">Multiplayer dice battle</p>
+          </div>
+
+          {!connected && (
+            <div className="rounded-xl border border-red-500/40 bg-red-950/30 px-4 py-3 text-sm text-red-400">
+              {wsError ?? "Connecting to server…"}
+            </div>
+          )}
+
+          <div className="space-y-3">
+            <input
+              type="text"
+              value={lobbyName}
+              onChange={e => setLobbyName(e.target.value)}
+              placeholder="Your name"
+              className="w-full rounded-xl border border-gray-600 bg-gray-800 px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:border-gray-400 focus:outline-none"
+            />
+
+            <button
+              disabled={!connected || !lobbyName.trim()}
+              onClick={() => { setLobbyError(null); sendMsg({ type: "create_room", playerName: lobbyName.trim() }); }}
+              className="w-full rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-gray-900 hover:bg-gray-100 disabled:opacity-40"
+            >
+              Create Room
+            </button>
+
+            <div className="flex items-center gap-2">
+              <div className="h-px flex-1 bg-gray-700" />
+              <span className="text-xs text-gray-600">or join existing</span>
+              <div className="h-px flex-1 bg-gray-700" />
+            </div>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={joinKey}
+                onChange={e => setJoinKey(e.target.value.toUpperCase())}
+                placeholder="Room key"
+                maxLength={4}
+                className="flex-1 rounded-xl border border-gray-600 bg-gray-800 px-4 py-2.5 text-sm font-mono tracking-widest text-white placeholder-gray-500 focus:border-gray-400 focus:outline-none"
+              />
+              <button
+                disabled={!connected || !lobbyName.trim() || joinKey.length < 4}
+                onClick={() => { setLobbyError(null); sendMsg({ type: "join_room", roomKey: joinKey, playerName: lobbyName.trim() }); }}
+                className="rounded-xl border border-gray-600 px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-40"
+              >
+                Join
+              </button>
+            </div>
+
+            {lobbyError && <p className="text-sm text-red-400">{lobbyError}</p>}
+          </div>
+        </div>
+      </div>
+    );
   }
 
-  function startGame() {
-    setState(prev => {
-      const players = spawnModifiers(prev.players, prev.playerCount);
-      return { ...prev, phase: "playing", players, logs: ["⚔️ The battle begins!"] };
-    });
+  // ── Lobby waiting ──
+  if (phase === "lobby-waiting") {
+    return (
+      <div className="min-h-screen bg-gray-950 text-white">
+        <div className="mx-auto max-w-3xl px-4 py-10 space-y-8">
+          <div>
+            <Link to="/" className="text-sm text-gray-500 hover:text-gray-300">← Back</Link>
+            <h1 className="mt-1 text-3xl font-bold tracking-tight">Hammer of Wilderwood</h1>
+          </div>
+
+          {/* Room key */}
+          <div className="rounded-2xl border border-gray-700 bg-gray-900 p-6 text-center space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">Room Key</p>
+            <p className="text-5xl font-bold tracking-widest font-mono">{room!.roomKey}</p>
+            <p className="text-sm text-gray-500">Share this with other players</p>
+          </div>
+
+          {/* Player list */}
+          <div className="flex flex-wrap gap-4">
+            {slots}
+          </div>
+
+          <div className="space-y-2">
+            {isHost && activePlayers.length < 2 && (
+              <p className="text-sm text-gray-500">Waiting for at least 1 more player…</p>
+            )}
+            {isHost && activePlayers.length >= 2 && !allDiceConnected && (
+              <p className="text-sm text-gray-500">Waiting for all players to connect their dice…</p>
+            )}
+            {isHost && (
+              <button
+                disabled={!allDiceConnected}
+                onClick={() => sendMsg({ type: "start_game" })}
+                className="rounded-xl bg-white px-8 py-3 text-sm font-semibold text-gray-900 hover:bg-gray-100 disabled:opacity-40"
+              >
+                Start Battle ({activePlayers.length} players)
+              </button>
+            )}
+            {!isHost && (
+              <p className="text-sm text-gray-500">Waiting for the host to start the game…</p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
-  function resetGame() {
-    setState({ playerCount: state.playerCount, phase: "setup", players: INITIAL_PLAYERS, logs: [] });
-  }
-
-  const activePlayers = state.players.slice(0, state.playerCount);
-  const winner = state.phase === "gameover" ? activePlayers.find(p => !p.eliminated) : undefined;
-
+  // ── Playing / gameover ──
   return (
     <div className="min-h-screen bg-gray-950 text-white">
       <div className="mx-auto max-w-5xl px-4 py-10 space-y-8">
 
-        {/* Header */}
         <div className="flex items-start justify-between">
           <div>
             <Link to="/" className="text-sm text-gray-500 hover:text-gray-300">← Back</Link>
             <h1 className="mt-1 text-3xl font-bold tracking-tight">Hammer of Wilderwood</h1>
           </div>
-          {state.phase !== "setup" && (
-            <button onClick={resetGame} className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-400 hover:bg-gray-800">
+          {isHost && (
+            <button
+              onClick={() => sendMsg({ type: "reset_game" })}
+              className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-400 hover:bg-gray-800"
+            >
               New Game
             </button>
           )}
         </div>
 
-        {/* Player count (setup only) */}
-        {state.phase === "setup" && (
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-500">Players:</span>
-            {[2, 3, 4].map(n => (
-              <button
-                key={n}
-                onClick={() => setState(prev => ({ ...prev, playerCount: n }))}
-                className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
-                  state.playerCount === n ? "bg-white text-gray-900" : "border border-gray-700 text-gray-400 hover:bg-gray-800"
-                }`}
-              >
-                {n}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Winner banner */}
         {winner && (
           <div className="rounded-2xl border border-yellow-500 bg-yellow-950/40 p-6 text-center">
             <p className="text-3xl font-bold text-yellow-400">🏆 {winner.name} wins!</p>
@@ -456,41 +415,15 @@ function HammerGame() {
           </div>
         )}
 
-        {/* Player slots — always mounted to preserve Bluetooth connections */}
         <div className="flex flex-wrap gap-4">
-          {activePlayers.map((player, i) => (
-            <PlayerSlot
-              key={player.id}
-              slotIndex={i}
-              player={player}
-              phase={state.phase}
-              now={now}
-              onNameChange={name => setState(prev => ({
-                ...prev,
-                players: prev.players.map((p, pi) => pi === i ? { ...p, name } : p),
-              }))}
-              onRoll={(face, faceCount) => handleRoll(player.id, face, faceCount)}
-            />
-          ))}
+          {slots}
         </div>
 
-        {/* Start button (setup) */}
-        {state.phase === "setup" && (
-          <button
-            onClick={startGame}
-            disabled={activePlayers.some(p => !p.name.trim())}
-            className="rounded-xl bg-white px-8 py-3 text-sm font-semibold text-gray-900 hover:bg-gray-100 disabled:opacity-40"
-          >
-            Start Battle
-          </button>
-        )}
-
-        {/* Battle log */}
-        {state.phase !== "setup" && state.logs.length > 0 && (
+        {room && room.logs.length > 0 && (
           <div className="rounded-2xl border border-gray-800 bg-gray-900 p-4">
             <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-gray-600">Battle Log</p>
             <div className="max-h-52 space-y-1 overflow-y-auto">
-              {state.logs.map((line, i) => (
+              {room.logs.map((line, i) => (
                 <p key={i} className={`text-sm ${i === 0 ? "text-white" : "text-gray-500"}`}>{line}</p>
               ))}
             </div>
