@@ -14,6 +14,11 @@ export const MODIFIER_INFO = {
     shield: { name: "Shield", emoji: "🛡️", cls: "bg-gray-500/20 text-gray-300 border-gray-400/40" },
     earthquake: { name: "Earthquake", emoji: "⚡", cls: "bg-yellow-500/20 text-yellow-300 border-yellow-400/40" },
 };
+export const CLASS_INFO = {
+    fighter: { name: "Fighter", emoji: "⚔️", desc: "50% chance to reduce incoming damage by 2" },
+    wizard: { name: "Wizard", emoji: "🔮", desc: "Triggers modifiers on adjacent die faces (±1)" },
+    rogue: { name: "Rogue", emoji: "🗡️", desc: "50% chance to deal +2 damage" },
+};
 // ── Factory ───────────────────────────────────────────────────────────────────
 export function makePlayer(id, name) {
     return {
@@ -27,6 +32,7 @@ export function makePlayer(id, name) {
         eliminated: false,
         dieConnected: false,
         dieName: "",
+        playerClass: "fighter",
     };
 }
 // ── Pure game logic ───────────────────────────────────────────────────────────
@@ -54,12 +60,19 @@ export function processRoll(players, rollerId, face, dieFaceCount, now) {
     let ps = players.map(p => ({ ...p, status: { ...p.status } }));
     const ri = ps.findIndex(p => p.id === rollerId);
     ps[ri] = { ...ps[ri], lastRoll: face, dieFaceCount };
-    const mod = ps[ri].modifierMap[face];
-    if (mod) {
+    // Wizard checks ±1 adjacent faces; everyone else checks only the rolled face
+    const faceRange = ps[ri].playerClass === "wizard"
+        ? [face - 1, face, face + 1].filter(f => f >= 1 && f <= (ps[ri].dieFaceCount || 20))
+        : [face];
+    for (const checkFace of faceRange) {
+        const mod = ps[ri].modifierMap[checkFace];
+        if (!mod)
+            continue;
         const info = MODIFIER_INFO[mod];
-        logs.push(`✨ ${roller.name} rolled ${face} — ${info.emoji} ${info.name}!`);
+        const faceNote = checkFace !== face ? ` (face ${checkFace})` : "";
+        logs.push(`✨ ${roller.name} rolled ${face} — ${info.emoji} ${info.name}!${faceNote}`);
         const newMap = { ...ps[ri].modifierMap };
-        delete newMap[face];
+        delete newMap[checkFace];
         ps[ri] = { ...ps[ri], modifierMap: newMap };
         const oppIdxs = ps.map((_, i) => i).filter(i => ps[i].id !== rollerId && !ps[i].eliminated);
         switch (mod) {
@@ -100,6 +113,11 @@ export function processRoll(players, rollerId, face, dieFaceCount, now) {
     if (ps[ri].eliminated)
         return { players: ps, logs };
     let damage = face;
+    // Rogue: 50% chance to deal +2 damage
+    if (ps[ri].playerClass === "rogue" && Math.random() < 0.5) {
+        damage += 2;
+        logs.push(`🗡️ ${roller.name} strikes with precision! (+2 dmg)`);
+    }
     if (ps[ri].status.poisonedRolls > 0) {
         damage = Math.floor(damage / 2);
         ps[ri] = { ...ps[ri], status: { ...ps[ri].status, poisonedRolls: ps[ri].status.poisonedRolls - 1 } };
@@ -115,9 +133,17 @@ export function processRoll(players, rollerId, face, dieFaceCount, now) {
         .filter(i => ps[i].id !== rollerId && !ps[i].eliminated)
         .forEach(oi => {
         const before = ps[oi];
-        ps[oi] = applyDamage(ps[oi], damage);
+        let incoming = damage;
+        // Fighter: 50% chance to reduce incoming damage by 2
+        if (before.playerClass === "fighter" && Math.random() < 0.5) {
+            const blocked = Math.min(2, incoming);
+            incoming -= blocked;
+            if (blocked > 0)
+                logs.push(`⚔️ ${before.name} braces for impact! (−${blocked} dmg)`);
+        }
+        ps[oi] = applyDamage(ps[oi], incoming);
         const shieldAbsorbed = before.status.shieldHp - ps[oi].status.shieldHp;
-        const actualDmg = damage - shieldAbsorbed;
+        const actualDmg = incoming - shieldAbsorbed;
         if (shieldAbsorbed > 0)
             logs.push(`🛡️ ${before.name}'s shield absorbed ${shieldAbsorbed} damage!`);
         logs.push(`⚔️ ${roller.name} rolled ${face} → ${actualDmg} dmg to ${before.name} (${ps[oi].hp}/${MAX_HP} HP)`);

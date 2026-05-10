@@ -6,7 +6,8 @@ import { requestPixel } from "@systemic-games/pixels-web-connect";
 import { usePixelConnect, usePixelEvent } from "@systemic-games/pixels-react";
 import type { Pixel } from "@systemic-games/pixels-web-connect";
 import type { Route } from "./+types/hammer-of-wilderwood";
-import type { RoomState, GamePlayer, GamePhase, ModifierType } from "../../server/game-logic";
+import type { RoomState, GamePlayer, GamePhase, ModifierType, PlayerClass } from "../../server/game-logic";
+import { CLASS_INFO } from "../../server/game-logic";
 import type { ClientMessage, ServerMessage } from "../../server/protocol";
 
 // ── Constants (display-only, game logic lives on the server) ─────────────────
@@ -120,9 +121,41 @@ function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps)
 
   // ── Setup / lobby view ──
   if (phase === "lobby-waiting") {
+    const cls = CLASS_INFO[player.playerClass];
     return (
-      <div className={`rounded-2xl border ${colors.border} ${colors.bg} p-5 space-y-3 w-48`}>
+      <div className={`rounded-2xl border ${colors.border} ${colors.bg} p-5 space-y-3 w-52`}>
         <p className={`text-xs font-semibold uppercase tracking-widest ${colors.text}`}>{player.name}</p>
+
+        {/* Class selection */}
+        {isMe ? (
+          <div className="space-y-1.5">
+            <p className="text-xs text-gray-500">Class</p>
+            <div className="flex gap-1">
+              {(Object.keys(CLASS_INFO) as PlayerClass[]).map(c => {
+                const ci = CLASS_INFO[c];
+                return (
+                  <button
+                    key={c}
+                    title={ci.desc}
+                    onClick={() => sendMsg({ type: "set_class", playerClass: c })}
+                    className={`flex-1 rounded-lg border py-1.5 text-xs font-medium transition-colors ${
+                      player.playerClass === c
+                        ? `${colors.border} ${colors.bg} ${colors.text}`
+                        : "border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300"
+                    }`}
+                  >
+                    {ci.emoji}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-500">{cls.emoji} {cls.name} — {cls.desc}</p>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-400">{cls.emoji} {cls.name}</p>
+        )}
+
+        {/* Die connection */}
         {isMe && (
           !pixel ? (
             <button onClick={connect} className="w-full rounded-lg bg-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-600">
@@ -163,7 +196,12 @@ function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps)
       )}
 
       <div className="flex items-center justify-between">
-        <span className={`font-bold ${colors.text}`}>{player.name}</span>
+        <div className="flex items-center gap-1.5">
+          <span className={`font-bold ${colors.text}`}>{player.name}</span>
+          <span className="text-sm" title={`${CLASS_INFO[player.playerClass].name} — ${CLASS_INFO[player.playerClass].desc}`}>
+            {CLASS_INFO[player.playerClass].emoji}
+          </span>
+        </div>
         {player.eliminated && <span className="text-xs font-semibold text-red-500">ELIMINATED</span>}
       </div>
 

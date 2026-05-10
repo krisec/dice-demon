@@ -1,4 +1,4 @@
-import type { RoomState } from "./game-logic.js";
+import type { RoomState, PlayerClass } from "./game-logic.js";
 
 // Client → Server messages
 export type ClientMessage =
@@ -7,7 +7,8 @@ export type ClientMessage =
   | { type: "start_game" }
   | { type: "reset_game" }
   | { type: "roll"; face: number; dieFaceCount: number }
-  | { type: "die_status"; connected: boolean; dieName?: string };
+  | { type: "die_status"; connected: boolean; dieName?: string }
+  | { type: "set_class"; playerClass: PlayerClass };
 
 // Server → Client messages
 export type ServerMessage =

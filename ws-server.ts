@@ -153,6 +153,7 @@ wss.on("connection", (ws) => {
         fresh.id = p.id;
         fresh.dieConnected = p.dieConnected;
         fresh.dieName = p.dieName;
+        fresh.playerClass = p.playerClass;
         return fresh;
       });
       room.state = { ...room.state, phase: "lobby-waiting", playerCount: 0, players, logs: [] };
@@ -175,6 +176,16 @@ wss.on("connection", (ws) => {
         p.id === myPlayerId
           ? { ...p, dieConnected: msg.connected, dieName: msg.dieName ?? p.dieName }
           : p
+      );
+      room.state = { ...room.state, players };
+      broadcastState(room);
+      return;
+    }
+
+    if (msg.type === "set_class") {
+      if (room.state.phase !== "lobby-waiting") return;
+      const players = room.state.players.map(p =>
+        p.id === myPlayerId ? { ...p, playerClass: msg.playerClass } : p
       );
       room.state = { ...room.state, players };
       broadcastState(room);
