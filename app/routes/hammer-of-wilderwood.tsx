@@ -110,6 +110,8 @@ interface SlotProps {
   sendMsg: (msg: ClientMessage) => void;
 }
 
+const LARGE_DAMAGE_THRESHOLD = 15;
+
 function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps) {
   const [pixel, setPixel] = useState<Pixel | undefined>();
   const [reqErr, setReqErr] = useState<Error | undefined>();
@@ -117,6 +119,21 @@ function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps)
   const [rollFace] = usePixelEvent(pixel, "rollFace");
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
+
+  // Damage animations
+  const prevHpRef = useRef(player.hp);
+  const [damageEvents, setDamageEvents] = useState<Array<{ id: number; amount: number }>>([]);
+  const eventIdRef = useRef(0);
+  useEffect(() => {
+    const taken = prevHpRef.current - player.hp;
+    prevHpRef.current = player.hp;
+    if (taken >= LARGE_DAMAGE_THRESHOLD) {
+      const id = ++eventIdRef.current;
+      setDamageEvents(prev => [...prev.slice(-2), { id, amount: taken }]);
+      setTimeout(() => setDamageEvents(prev => prev.filter(e => e.id !== id)), 1400);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player.hp]);
 
   const isConnected = connStatus === "ready";
   const isBusy = connStatus === "connecting" || connStatus === "identifying" || connStatus === "disconnecting";
@@ -222,6 +239,17 @@ function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps)
           <span className="mt-1 text-xl font-bold text-blue-300">{frozenSecs}s</span>
         </div>
       )}
+
+      {damageEvents.map(e => (
+        <div key={e.id} className="pointer-events-none absolute inset-0 z-20">
+          <div className="absolute inset-0 rounded-2xl animate-damage-flash" />
+          <div className="absolute inset-x-0 top-6 flex justify-center">
+            <span className="animate-float-damage text-2xl font-bold text-red-400 drop-shadow-lg">
+              -{e.amount}
+            </span>
+          </div>
+        </div>
+      ))}
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
