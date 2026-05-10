@@ -200,6 +200,9 @@ wss.on("connection", (ws) => {
         ...(s.shieldHp !== undefined       && { shieldHp:          clamp(s.shieldHp, 5, 200)! }),
         ...(s.earthquakeMult !== undefined && { earthquakeMult:    clamp(s.earthquakeMult, 1, 10)! }),
         ...(s.spawnIntervalSecs !== undefined && { spawnIntervalSecs: clamp(s.spawnIntervalSecs, 5, 120)! }),
+        ...(s.fighterBlock !== undefined       && { fighterBlock:       clamp(s.fighterBlock, 0, 20)! }),
+        ...(s.rogueBonus !== undefined         && { rogueBonus:         clamp(s.rogueBonus, 0, 20)! }),
+        ...(s.wizardRange !== undefined        && { wizardRange:        clamp(s.wizardRange, 0, 5)! }),
       };
       room.state = { ...room.state, settings: merged };
       broadcastState(room);

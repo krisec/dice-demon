@@ -21,6 +21,9 @@ export interface GameSettings {
   shieldHp: number;
   earthquakeMult: number;
   spawnIntervalSecs: number;
+  fighterBlock: number;
+  rogueBonus: number;
+  wizardRange: number;
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -32,6 +35,9 @@ export const DEFAULT_SETTINGS: GameSettings = {
   shieldHp: 25,
   earthquakeMult: 2,
   spawnIntervalSecs: 30,
+  fighterBlock: 2,
+  rogueBonus: 2,
+  wizardRange: 1,
 };
 
 export const MODIFIER_INFO: Record<ModifierType, { name: string; emoji: string; cls: string }> = {
@@ -49,9 +55,9 @@ export type GamePhase = "lobby-entry" | "lobby-waiting" | "playing" | "gameover"
 export type PlayerClass = "fighter" | "wizard" | "rogue";
 
 export const CLASS_INFO: Record<PlayerClass, { name: string; emoji: string; desc: string }> = {
-  fighter: { name: "Fighter", emoji: "⚔️", desc: "50% chance to reduce incoming damage by 2" },
-  wizard:  { name: "Wizard",  emoji: "🔮", desc: "Triggers modifiers on adjacent die faces (±1)" },
-  rogue:   { name: "Rogue",   emoji: "🗡️", desc: "50% chance to deal +2 damage" },
+  fighter: { name: "Fighter", emoji: "⚔️", desc: "50% chance to reduce incoming damage" },
+  wizard:  { name: "Wizard",  emoji: "🔮", desc: "Triggers modifiers on adjacent die faces" },
+  rogue:   { name: "Rogue",   emoji: "🗡️", desc: "50% chance to deal bonus damage" },
 };
 
 export interface PlayerStatus {
@@ -140,10 +146,12 @@ export function processRoll(
   const ri = ps.findIndex(p => p.id === rollerId);
   ps[ri] = { ...ps[ri], lastRoll: face, dieFaceCount };
 
-  // Wizard checks ±1 adjacent faces; everyone else checks only the rolled face
-  const faceRange = ps[ri].playerClass === "wizard"
-    ? [face - 1, face, face + 1].filter(f => f >= 1 && f <= (ps[ri].dieFaceCount || 20))
-    : [face];
+  // Wizard checks ±wizardRange adjacent faces; everyone else checks only the rolled face
+  const range = ps[ri].playerClass === "wizard" ? settings.wizardRange : 0;
+  const faceRange: number[] = [];
+  for (let f = face - range; f <= face + range; f++) {
+    if (f >= 1 && f <= (ps[ri].dieFaceCount || 20)) faceRange.push(f);
+  }
 
   for (const checkFace of faceRange) {
     const mod = ps[ri].modifierMap[checkFace];
@@ -195,10 +203,10 @@ export function processRoll(
 
   let damage = face;
 
-  // Rogue: 50% chance to deal +2 damage
+  // Rogue: 50% chance to deal +rogueBonus damage
   if (ps[ri].playerClass === "rogue" && Math.random() < 0.5) {
-    damage += 2;
-    logs.push(`🗡️ ${roller.name} strikes with precision! (+2 dmg)`);
+    damage += settings.rogueBonus;
+    logs.push(`🗡️ ${roller.name} strikes with precision! (+${settings.rogueBonus} dmg)`);
   }
 
   if (ps[ri].status.poisonedRolls > 0) {
@@ -219,9 +227,9 @@ export function processRoll(
       const before = ps[oi];
       let incoming = damage;
 
-      // Fighter: 50% chance to reduce incoming damage by 2
+      // Fighter: 50% chance to reduce incoming damage by fighterBlock
       if (before.playerClass === "fighter" && Math.random() < 0.5) {
-        const blocked = Math.min(2, incoming);
+        const blocked = Math.min(settings.fighterBlock, incoming);
         incoming -= blocked;
         if (blocked > 0) logs.push(`⚔️ ${before.name} braces for impact! (−${blocked} dmg)`);
       }

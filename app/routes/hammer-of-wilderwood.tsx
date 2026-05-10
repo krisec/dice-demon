@@ -55,6 +55,15 @@ const SETTING_GROUPS: Array<{
   { label: "⚡ Earthquake", fields: [
     { key: "earthquakeMult", label: "Damage multiplier", min: 1, max: 10, step: 0.5, suffix: "×" },
   ]},
+  { label: "⚔️ Fighter", fields: [
+    { key: "fighterBlock", label: "Damage blocked", min: 0, max: 20, step: 1 },
+  ]},
+  { label: "🗡️ Rogue", fields: [
+    { key: "rogueBonus", label: "Bonus damage", min: 0, max: 20, step: 1 },
+  ]},
+  { label: "🔮 Wizard", fields: [
+    { key: "wizardRange", label: "Adjacent face range", min: 0, max: 5, step: 1 },
+  ]},
 ];
 
 // ── WebSocket hook ────────────────────────────────────────────────────────────
