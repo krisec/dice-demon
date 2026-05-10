@@ -1,559 +1,14 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router";
-import { requestPixel } from "@systemic-games/pixels-web-connect";
-import { usePixelConnect, usePixelEvent } from "@systemic-games/pixels-react";
-import type { Pixel } from "@systemic-games/pixels-web-connect";
 import type { Route } from "./+types/hammer-of-wilderwood";
-import type { RoomState, GamePlayer, GamePhase, ModifierType, PlayerClass, GameSettings } from "../../server/game-logic";
-import { CLASS_INFO, DEFAULT_SETTINGS, makePlayer, processRoll, spawnModifiers } from "../../server/game-logic";
-import type { ClientMessage, ServerMessage } from "../../server/protocol";
-
-// ── Constants (display-only, game logic lives on the server) ─────────────────
-
-const MAX_HP = 250;
-
-const PLAYER_COLORS = [
-  { bg: "bg-rose-950/40",    border: "border-rose-500",    bar: "bg-rose-500",    text: "text-rose-400" },
-  { bg: "bg-blue-950/40",    border: "border-blue-500",    bar: "bg-blue-500",    text: "text-blue-400" },
-  { bg: "bg-emerald-950/40", border: "border-emerald-500", bar: "bg-emerald-500", text: "text-emerald-400" },
-  { bg: "bg-amber-950/40",   border: "border-amber-500",   bar: "bg-amber-500",   text: "text-amber-400" },
-];
-
-const MODIFIER_INFO: Record<ModifierType, { name: string; emoji: string; cls: string }> = {
-  frost:      { name: "Frost",      emoji: "❄️", cls: "bg-blue-500/20 text-blue-300 border-blue-400/40" },
-  fire:       { name: "Fire",       emoji: "🔥", cls: "bg-orange-500/20 text-orange-300 border-orange-400/40" },
-  poison:     { name: "Poison",     emoji: "☠️", cls: "bg-green-500/20 text-green-300 border-green-400/40" },
-  shield:     { name: "Shield",     emoji: "🛡️", cls: "bg-gray-500/20 text-gray-300 border-gray-400/40" },
-  earthquake: { name: "Earthquake", emoji: "⚡", cls: "bg-yellow-500/20 text-yellow-300 border-yellow-400/40" },
-};
-
-// ── Settings field config (for rendering the settings panel) ─────────────────
-
-const SETTING_GROUPS: Array<{
-  label: string;
-  fields: Array<{ key: keyof GameSettings; label: string; min: number; max: number; step: number; suffix?: string }>;
-}> = [
-  { label: "General", fields: [
-    { key: "maxHp",             label: "Max HP",               min: 50,  max: 500, step: 25 },
-    { key: "spawnIntervalSecs", label: "Modifier spawn every", min: 5,   max: 120, step: 5, suffix: "s" },
-  ]},
-  { label: "🔥 Fire", fields: [
-    { key: "fireDamage", label: "Damage per tick", min: 1, max: 50, step: 1 },
-    { key: "fireRolls",  label: "Ticks",           min: 1, max: 10, step: 1 },
-  ]},
-  { label: "❄️ Frost", fields: [
-    { key: "frostSecs", label: "Freeze duration", min: 1, max: 60, step: 1, suffix: "s" },
-  ]},
-  { label: "☠️ Poison", fields: [
-    { key: "poisonRolls", label: "Ticks (−50% dmg)", min: 1, max: 10, step: 1 },
-  ]},
-  { label: "🛡️ Shield", fields: [
-    { key: "shieldHp", label: "HP amount", min: 5, max: 200, step: 5 },
-  ]},
-  { label: "⚡ Earthquake", fields: [
-    { key: "earthquakeMult", label: "Damage multiplier", min: 1, max: 10, step: 0.5, suffix: "×" },
-  ]},
-  { label: "⚔️ Fighter", fields: [
-    { key: "fighterBlock", label: "Damage blocked", min: 0, max: 20, step: 1 },
-  ]},
-  { label: "🗡️ Rogue", fields: [
-    { key: "rogueBonus", label: "Bonus damage", min: 0, max: 20, step: 1 },
-  ]},
-  { label: "🔮 Wizard", fields: [
-    { key: "wizardRange", label: "Adjacent face range", min: 0, max: 5, step: 1 },
-  ]},
-];
-
-// ── Background trees ──────────────────────────────────────────────────────────
-
-function Tree({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 100 166" fill="currentColor" className={className} aria-hidden="true">
-      <polygon points="50,2 82,48 18,48" />
-      <polygon points="50,28 90,86 10,86" />
-      <polygon points="50,55 100,126 0,126" />
-      <rect x="43" y="126" width="14" height="38" />
-    </svg>
-  );
-}
-
-function TreeBackground() {
-  return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden text-green-600">
-      {/* left edge */}
-      <Tree className="absolute -bottom-4 -left-14 h-[540px] opacity-35" />
-      <Tree className="absolute bottom-0 left-4 h-[290px] opacity-20" />
-      <Tree className="absolute bottom-0 left-[8%] h-[170px] opacity-10" />
-      {/* left mid */}
-      <Tree className="absolute -bottom-1 left-[15%] h-[380px] opacity-15" />
-      <Tree className="absolute bottom-0 left-[22%] h-[200px] opacity-10" />
-      <Tree className="absolute bottom-0 left-[30%] h-[250px] opacity-10" />
-      <Tree className="absolute bottom-0 left-[38%] h-[150px] opacity-5" />
-      {/* centre */}
-      <Tree className="absolute bottom-0 left-[46%] h-[210px] opacity-10" />
-      <Tree className="absolute bottom-0 right-[44%] h-[160px] opacity-5" />
-      {/* right mid */}
-      <Tree className="absolute bottom-0 right-[30%] h-[240px] opacity-10" />
-      <Tree className="absolute bottom-0 right-[22%] h-[185px] opacity-10" />
-      <Tree className="absolute -bottom-1 right-[15%] h-[360px] opacity-15" />
-      <Tree className="absolute bottom-0 right-[8%] h-[190px] opacity-10" />
-      {/* right edge */}
-      <Tree className="absolute bottom-0 right-4 h-[300px] opacity-20" />
-      <Tree className="absolute -bottom-4 -right-14 h-[560px] opacity-35" />
-    </div>
-  );
-}
-
-// ── WebSocket hook ────────────────────────────────────────────────────────────
-
-function useGameSocket() {
-  const wsRef = useRef<WebSocket | null>(null);
-  const [room, setRoom] = useState<RoomState | null>(null);
-  const [myId, setMyId] = useState<number | null>(null);
-  const [wsError, setWsError] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
-
-  const connect = useCallback(() => {
-    if (wsRef.current) return;
-    const url = import.meta.env.DEV
-      ? "ws://localhost:3001"
-      : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
-    try {
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
-
-      ws.onopen = () => { setConnected(true); setWsError(null); };
-      ws.onclose = () => { setConnected(false); wsRef.current = null; };
-      ws.onerror = () => setWsError("Could not connect to game server");
-
-      ws.onmessage = (ev) => {
-        const msg = JSON.parse(ev.data as string) as ServerMessage;
-        if (msg.type === "joined") setMyId(msg.playerId);
-        if (msg.type === "state_update") setRoom(msg.room);
-        if (msg.type === "error") setWsError(msg.message);
-      };
-    } catch (e) {
-      setWsError(e instanceof Error ? e.message : "Could not connect to game server");
-    }
-  }, []);
-
-  useEffect(() => { connect(); return () => { wsRef.current?.close(); }; }, [connect]);
-
-  function sendMsg(msg: ClientMessage) {
-    if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(msg));
-  }
-
-  return { room, myId, wsError, connected, sendMsg };
-}
-
-// ── PlayerSlot ────────────────────────────────────────────────────────────────
-
-interface SlotProps {
-  slotIndex: number;
-  player: GamePlayer;
-  isMe: boolean;
-  phase: GamePhase;
-  now: number;
-  sendMsg: (msg: ClientMessage) => void;
-  onSetClass?: (c: PlayerClass) => void;
-}
-
-const LARGE_DAMAGE_THRESHOLD = 15;
-const CPU_DIE_FACES = 20;
-
-function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg, onSetClass }: SlotProps) {
-  const [pixel, setPixel] = useState<Pixel | undefined>();
-  const [reqErr, setReqErr] = useState<Error | undefined>();
-  const [connStatus, curPixel, dispatch, connErr] = usePixelConnect(pixel);
-  const [rollFace] = usePixelEvent(pixel, "rollFace");
-  const phaseRef = useRef(phase);
-  phaseRef.current = phase;
-
-  // Damage animations
-  const prevHpRef = useRef(player.hp);
-  const [damageEvents, setDamageEvents] = useState<Array<{ id: number; amount: number }>>([]);
-  const eventIdRef = useRef(0);
-  useEffect(() => {
-    const taken = prevHpRef.current - player.hp;
-    prevHpRef.current = player.hp;
-    if (taken >= LARGE_DAMAGE_THRESHOLD) {
-      const id = ++eventIdRef.current;
-      setDamageEvents(prev => [...prev.slice(-2), { id, amount: taken }]);
-      setTimeout(() => setDamageEvents(prev => prev.filter(e => e.id !== id)), 1400);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player.hp]);
-
-  const isConnected = connStatus === "ready";
-  const isBusy = connStatus === "connecting" || connStatus === "identifying" || connStatus === "disconnecting";
-  const dieName = curPixel?.name || "";
-
-  // Notify server when die connects/disconnects
-  useEffect(() => {
-    if (!isMe) return;
-    sendMsg({ type: "die_status", connected: isConnected, dieName: dieName || undefined });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isConnected, dieName]);
-
-  useEffect(() => {
-    if (!isMe || !rollFace || !curPixel) return;
-    if (phaseRef.current !== "playing") return;
-    sendMsg({ type: "roll", face: rollFace.face, dieFaceCount: curPixel.dieFaceCount });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rollFace]);
-
-  const colors = PLAYER_COLORS[slotIndex];
-  const frozenSecs = player.status.frozenUntil > now ? Math.ceil((player.status.frozenUntil - now) / 1000) : 0;
-
-  async function connect() {
-    setReqErr(undefined);
-    try { setPixel(await requestPixel()); }
-    catch (e) { setReqErr(e instanceof Error ? e : new Error(String(e))); }
-  }
-
-  function disconnect() { dispatch("disconnect"); setPixel(undefined); }
-
-  // ── Setup / lobby view ──
-  if (phase === "lobby-waiting") {
-    const cls = CLASS_INFO[player.playerClass];
-    return (
-      <div className={`rounded-2xl border ${colors.border} ${colors.bg} p-5 space-y-3 w-52`}>
-        <p className={`text-xs font-semibold uppercase tracking-widest ${colors.text}`}>{player.name}</p>
-
-        {/* Class selection */}
-        {isMe ? (
-          <div className="space-y-1.5">
-            <p className="text-xs text-gray-500">Class</p>
-            <div className="flex gap-1">
-              {(Object.keys(CLASS_INFO) as PlayerClass[]).map(c => {
-                const ci = CLASS_INFO[c];
-                return (
-                  <button
-                    key={c}
-                    title={ci.desc}
-                    onClick={() => sendMsg({ type: "set_class", playerClass: c })}
-                    className={`flex-1 rounded-lg border py-1.5 text-xs font-medium transition-colors ${
-                      player.playerClass === c
-                        ? `${colors.border} ${colors.bg} ${colors.text}`
-                        : "border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300"
-                    }`}
-                  >
-                    {ci.emoji}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-xs text-gray-500">{cls.emoji} {cls.name} — {cls.desc}</p>
-          </div>
-        ) : onSetClass ? (
-          <div className="space-y-1.5">
-            <p className="text-xs text-gray-500">Class</p>
-            <div className="flex gap-1">
-              {(Object.keys(CLASS_INFO) as PlayerClass[]).map(c => {
-                const ci = CLASS_INFO[c];
-                return (
-                  <button key={c} title={ci.desc} onClick={() => onSetClass(c)}
-                    className={`flex-1 rounded-lg border py-1.5 text-xs font-medium transition-colors ${
-                      player.playerClass === c
-                        ? `${colors.border} ${colors.bg} ${colors.text}`
-                        : "border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300"
-                    }`}>
-                    {ci.emoji}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-xs text-gray-500">{cls.emoji} {cls.name} — {cls.desc}</p>
-          </div>
-        ) : (
-          <p className="text-xs text-gray-400">{cls.emoji} {cls.name}</p>
-        )}
-
-        {/* Die connection */}
-        {isMe && (
-          !pixel ? (
-            <button onClick={connect} className="w-full rounded-lg bg-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-600">
-              Connect Die
-            </button>
-          ) : (
-            <div className="space-y-1.5">
-              <p className={`text-xs font-medium ${isConnected ? "text-green-400" : "text-gray-400"}`}>
-                {isConnected ? `✓ ${dieName || "Die"}` : (connStatus ?? "Connecting…")}
-              </p>
-              <div className="flex gap-1.5">
-                {!isConnected && !isBusy && (
-                  <button onClick={connect} className="flex-1 rounded-lg bg-gray-700 px-3 py-1 text-xs text-gray-200 hover:bg-gray-600">
-                    Reconnect
-                  </button>
-                )}
-                <button onClick={disconnect} disabled={isBusy} className="flex-1 rounded-lg border border-gray-700 px-3 py-1 text-xs text-gray-500 hover:bg-gray-800 disabled:opacity-40">
-                  Disconnect
-                </button>
-              </div>
-            </div>
-          )
-        )}
-        {!isMe && (
-          <p className={`text-xs ${player.dieConnected ? "text-green-400" : "text-gray-500"}`}>
-            {player.dieConnected ? `✓ ${player.dieName || "Die connected"}` : "No die connected"}
-          </p>
-        )}
-        {(reqErr ?? connErr) && <p className="text-xs text-red-400">{(reqErr ?? connErr)!.message}</p>}
-      </div>
-    );
-  }
-
-  // ── Game view ──
-  const hpPct = (player.hp / MAX_HP) * 100;
-  const modEntries = Object.entries(player.modifierMap) as [string, ModifierType][];
-
-  return (
-    <div className={`relative rounded-2xl border ${colors.border} ${colors.bg} p-5 space-y-3 w-52 ${player.eliminated ? "opacity-40" : ""}`}>
-      {frozenSecs > 0 && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-2xl bg-blue-950/80">
-          <span className="text-4xl">❄️</span>
-          <span className="mt-1 text-xl font-bold text-blue-300">{frozenSecs}s</span>
-        </div>
-      )}
-
-      {damageEvents.map(e => (
-        <div key={e.id} className="pointer-events-none absolute inset-0 z-20">
-          <div className="absolute inset-0 rounded-2xl animate-damage-flash" />
-          <div className="absolute inset-x-0 top-6 flex justify-center">
-            <span className="animate-float-damage text-2xl font-bold text-red-400 drop-shadow-lg">
-              -{e.amount}
-            </span>
-          </div>
-        </div>
-      ))}
-
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <span className={`font-bold ${colors.text}`}>{player.name}</span>
-          <span className="text-sm" title={`${CLASS_INFO[player.playerClass].name} — ${CLASS_INFO[player.playerClass].desc}`}>
-            {CLASS_INFO[player.playerClass].emoji}
-          </span>
-        </div>
-        {player.eliminated && <span className="text-xs font-semibold text-red-500">ELIMINATED</span>}
-      </div>
-
-      <div>
-        <div className="mb-1 flex justify-between text-xs text-gray-500">
-          <span>HP</span><span>{player.hp}/{MAX_HP}</span>
-        </div>
-        <div className="h-2.5 w-full rounded-full bg-gray-700">
-          <div className={`h-2.5 rounded-full transition-all duration-300 ${colors.bar}`} style={{ width: `${hpPct}%` }} />
-        </div>
-      </div>
-
-      {(player.status.shieldHp > 0 || player.status.burningRolls > 0 || player.status.poisonedRolls > 0 || player.status.earthquakeReady) && (
-        <div className="flex flex-wrap gap-1">
-          {player.status.shieldHp > 0 && <span className="rounded border border-gray-400/40 bg-gray-500/20 px-1.5 py-0.5 text-xs text-gray-300">🛡️ {player.status.shieldHp}</span>}
-          {player.status.burningRolls > 0 && <span className="rounded border border-orange-400/40 bg-orange-500/20 px-1.5 py-0.5 text-xs text-orange-300">🔥 ×{player.status.burningRolls}</span>}
-          {player.status.poisonedRolls > 0 && <span className="rounded border border-green-400/40 bg-green-500/20 px-1.5 py-0.5 text-xs text-green-300">☠️ ×{player.status.poisonedRolls}</span>}
-          {player.status.earthquakeReady && <span className="rounded border border-yellow-400/40 bg-yellow-500/20 px-1.5 py-0.5 text-xs text-yellow-300">⚡ ready</span>}
-        </div>
-      )}
-
-      {player.lastRoll !== undefined && (
-        <div className="flex items-center gap-2">
-          <div className={`flex h-9 w-9 items-center justify-center rounded-lg border ${colors.border} text-lg font-bold text-white`}>
-            {player.lastRoll}
-          </div>
-          <span className="text-xs text-gray-600">last roll</span>
-        </div>
-      )}
-
-      {modEntries.length > 0 && (
-        <div>
-          <p className="mb-1 text-xs text-gray-600">Face modifiers</p>
-          <div className="flex flex-wrap gap-1">
-            {modEntries.map(([face, m]) => (
-              <span key={face} className={`rounded border px-1.5 py-0.5 text-xs ${MODIFIER_INFO[m].cls}`}>
-                {face}: {MODIFIER_INFO[m].emoji}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!player.eliminated && isMe && (
-        <div className="border-t border-gray-800 pt-2">
-          {!pixel ? (
-            <button onClick={connect} className="w-full rounded-lg bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">
-              Connect Die
-            </button>
-          ) : (
-            <div className="flex items-center justify-between">
-              <span className={`text-xs ${isConnected ? "text-green-400" : "text-gray-500"}`}>
-                {isConnected ? `✓ ${dieName || "Die"}` : (connStatus ?? "—")}
-              </span>
-              <button onClick={disconnect} disabled={isBusy} className="text-xs text-gray-600 hover:text-gray-400 disabled:opacity-40">
-                ×
-              </button>
-            </div>
-          )}
-          {(reqErr ?? connErr) && <p className="mt-1 text-xs text-red-400">{(reqErr ?? connErr)!.message}</p>}
-        </div>
-      )}
-      {!player.eliminated && !isMe && (
-        <div className="border-t border-gray-800 pt-2">
-          <p className={`text-xs ${player.dieConnected ? "text-green-400" : "text-gray-500"}`}>
-            {player.dieConnected ? `✓ ${player.dieName || "Die connected"}` : "No die connected"}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Solo game ─────────────────────────────────────────────────────────────────
-
-const HUMAN_ID = 1;
-const CPU_ID = 2;
-
-function makeSoloPlayers(): GamePlayer[] {
-  return [
-    { ...makePlayer(0, "You"), id: HUMAN_ID },
-    { ...makePlayer(1, "CPU"), id: CPU_ID, dieConnected: true, dieName: "d20" },
-  ];
-}
-
-function SoloGame({ onBack }: { onBack: () => void }) {
-  const [players, setPlayers] = useState<GamePlayer[]>(makeSoloPlayers);
-  const [phase, setPhase] = useState<GamePhase>("lobby-waiting");
-  const [logs, setLogs] = useState<string[]>([]);
-  const [settings] = useState<GameSettings>({ ...DEFAULT_SETTINGS });
-  const [now, setNow] = useState(Date.now());
-
-  const playersRef = useRef(players);
-  playersRef.current = players;
-  const phaseRef = useRef(phase);
-  phaseRef.current = phase;
-
-  useEffect(() => {
-    if (phase !== "playing") return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [phase]);
-
-  useEffect(() => {
-    if (phase !== "playing") return;
-    const id = setInterval(() => {
-      setPlayers(ps => spawnModifiers(ps, 2));
-      setLogs(prev => ["✨ New modifiers spawned!", ...prev].slice(0, 50));
-    }, settings.spawnIntervalSecs * 1000);
-    return () => clearInterval(id);
-  }, [phase, settings.spawnIntervalSecs]);
-
-  function applyRoll(rollerId: number, face: number, faceCount: number) {
-    const { players: next, logs: newLogs } = processRoll(playersRef.current, rollerId, face, faceCount, Date.now(), settings);
-    playersRef.current = next;
-    setPlayers(next);
-    setLogs(prev => [...newLogs, ...prev].slice(0, 50));
-    const alive = next.filter(p => !p.eliminated);
-    if (alive.length <= 1) setPhase("gameover");
-    return alive.length <= 1;
-  }
-
-  function handleSendMsg(msg: ClientMessage) {
-    if (msg.type === "die_status") {
-      setPlayers(ps => ps.map(p => p.id === HUMAN_ID ? { ...p, dieConnected: msg.connected, dieName: msg.dieName ?? p.dieName } : p));
-      return;
-    }
-    if (msg.type === "set_class") {
-      setPlayers(ps => ps.map(p => p.id === HUMAN_ID ? { ...p, playerClass: msg.playerClass } : p));
-      return;
-    }
-    if (msg.type === "roll") {
-      const over = applyRoll(HUMAN_ID, msg.face, msg.dieFaceCount);
-      if (!over) setTimeout(() => {
-        if (phaseRef.current !== "playing") return;
-        applyRoll(CPU_ID, 1 + Math.floor(Math.random() * CPU_DIE_FACES), CPU_DIE_FACES);
-      }, 900);
-    }
-  }
-
-  function startGame() {
-    setPlayers(spawnModifiers(players.map(p => ({ ...p, hp: settings.maxHp })), 2));
-    setLogs(["⚔️ The battle begins!"]);
-    setPhase("playing");
-  }
-
-  function resetGame() {
-    setPlayers(makeSoloPlayers());
-    setLogs([]);
-    setPhase("lobby-waiting");
-  }
-
-  const human = players.find(p => p.id === HUMAN_ID)!;
-  const winner = phase === "gameover" ? players.find(p => !p.eliminated) : undefined;
-
-  const slots = players.map((player, i) => (
-    <PlayerSlot key={player.id} slotIndex={i} player={player} isMe={player.id === HUMAN_ID}
-      phase={phase} now={now} sendMsg={handleSendMsg}
-      onSetClass={player.id === CPU_ID && phase === "lobby-waiting"
-        ? (c) => setPlayers(ps => ps.map(p => p.id === CPU_ID ? { ...p, playerClass: c } : p))
-        : undefined}
-    />
-  ));
-
-  return (
-    <div className="relative min-h-screen overflow-hidden bg-gray-950 text-white">
-      <TreeBackground />
-      <div className="relative mx-auto max-w-3xl px-4 py-10 space-y-8">
-        <div className="flex items-start justify-between">
-          <div>
-            <button onClick={onBack} className="text-sm text-gray-500 hover:text-gray-300">← Back</button>
-            <h1 className="mt-1 text-3xl font-bold tracking-tight">Hammer of Wilderwood</h1>
-            <p className="mt-0.5 text-sm text-gray-500">Solo</p>
-          </div>
-          {phase !== "lobby-waiting" && (
-            <button onClick={resetGame} className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-400 hover:bg-gray-800">
-              New Game
-            </button>
-          )}
-        </div>
-
-        {winner && (
-          <div className="rounded-2xl border border-yellow-500 bg-yellow-950/40 p-6 text-center">
-            <p className="text-3xl font-bold text-yellow-400">
-              {winner.id === HUMAN_ID ? "🏆 You win!" : "💀 CPU wins!"}
-            </p>
-            <p className="mt-1 text-sm text-gray-400">The last warrior standing in Wilderwood</p>
-          </div>
-        )}
-
-        <div className="flex flex-wrap gap-4">{slots}</div>
-
-        {phase === "lobby-waiting" && (
-          <div className="space-y-2">
-            {!human.dieConnected && <p className="text-sm text-gray-500">Connect your die to start…</p>}
-            <button disabled={!human.dieConnected} onClick={startGame}
-              className="rounded-xl bg-white px-8 py-3 text-sm font-semibold text-gray-900 hover:bg-gray-100 disabled:opacity-40">
-              Start Battle
-            </button>
-          </div>
-        )}
-
-        {logs.length > 0 && (
-          <div className="rounded-2xl border border-gray-800 bg-gray-900 p-4">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-gray-600">Battle Log</p>
-            <div className="max-h-52 space-y-1 overflow-y-auto">
-              {logs.map((line, i) => (
-                <p key={i} className={`text-sm ${i === 0 ? "text-white" : "text-gray-500"}`}>{line}</p>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Main game component ───────────────────────────────────────────────────────
+import { DEFAULT_SETTINGS } from "../../server/game-logic";
+import { SETTING_GROUPS } from "../components/hammer/constants";
+import { TreeBackground } from "../components/hammer/TreeBackground";
+import { useGameSocket } from "../components/hammer/useGameSocket";
+import { PlayerSlot } from "../components/hammer/PlayerSlot";
+import { SoloGame } from "../components/hammer/SoloGame";
 
 function HammerGame() {
   const [soloMode, setSoloMode] = useState(false);
@@ -564,14 +19,12 @@ function HammerGame() {
   const [lobbyError, setLobbyError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // Tick for freeze countdowns
   useEffect(() => {
     if (room?.phase !== "playing") return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [room?.phase]);
 
-  // Show server errors briefly
   useEffect(() => {
     if (!wsError) return;
     setLobbyError(wsError);
@@ -580,24 +33,14 @@ function HammerGame() {
   if (soloMode) return <SoloGame onBack={() => setSoloMode(false)} />;
 
   const phase = room?.phase ?? "lobby-entry";
-  const myPlayer = room?.players.find(p => p.id === myId);
-  const mySlotIndex = room?.players.findIndex(p => p.id === myId) ?? -1;
   const isHost = room?.hostId === myId;
   const activePlayers = room?.players ?? [];
   const allDiceConnected = activePlayers.length >= 2 && activePlayers.every(p => p.dieConnected);
   const winner = phase === "gameover" ? activePlayers.find(p => !p.eliminated) : undefined;
 
-  // PlayerSlots must stay mounted to preserve Bluetooth across phase transitions
   const slots = room?.players.map((player, i) => (
-    <PlayerSlot
-      key={player.id}
-      slotIndex={i}
-      player={player}
-      isMe={player.id === myId}
-      phase={phase}
-      now={now}
-      sendMsg={sendMsg}
-    />
+    <PlayerSlot key={player.id} slotIndex={i} player={player} isMe={player.id === myId}
+      phase={phase} now={now} sendMsg={sendMsg} />
   ));
 
   // ── Lobby entry ──
@@ -685,17 +128,13 @@ function HammerGame() {
             <h1 className="mt-1 text-3xl font-bold tracking-tight">Hammer of Wilderwood</h1>
           </div>
 
-          {/* Room key */}
           <div className="rounded-2xl border border-gray-700 bg-gray-900 p-6 text-center space-y-2">
             <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">Room Key</p>
             <p className="text-5xl font-bold tracking-widest font-mono">{room!.roomKey}</p>
             <p className="text-sm text-gray-500">Share this with other players</p>
           </div>
 
-          {/* Player list */}
-          <div className="flex flex-wrap gap-4">
-            {slots}
-          </div>
+          <div className="flex flex-wrap gap-4">{slots}</div>
 
           {/* Settings panel */}
           <div className="rounded-2xl border border-gray-700 bg-gray-900">
@@ -786,7 +225,6 @@ function HammerGame() {
     <div className="relative min-h-screen overflow-hidden bg-gray-950 text-white">
       <TreeBackground />
       <div className="relative mx-auto max-w-5xl px-4 py-10 space-y-8">
-
         <div className="flex items-start justify-between">
           <div>
             <Link to="/" className="text-sm text-gray-500 hover:text-gray-300">← Back</Link>
@@ -809,9 +247,7 @@ function HammerGame() {
           </div>
         )}
 
-        <div className="flex flex-wrap gap-4">
-          {slots}
-        </div>
+        <div className="flex flex-wrap gap-4">{slots}</div>
 
         {room && room.logs.length > 0 && (
           <div className="rounded-2xl border border-gray-800 bg-gray-900 p-4">
@@ -827,8 +263,6 @@ function HammerGame() {
     </div>
   );
 }
-
-// ── Route ─────────────────────────────────────────────────────────────────────
 
 export function meta({}: Route.MetaArgs) {
   return [
