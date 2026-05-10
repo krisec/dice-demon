@@ -26,6 +26,12 @@ export default function Home() {
       >
         Hammer of Wilderwood
       </Link>
+      <Link
+        to="/initiative"
+        className="rounded-xl bg-gray-800 px-6 py-3 text-sm font-medium text-white hover:bg-gray-700 active:bg-gray-600"
+      >
+        Initiative Tracker
+      </Link>
     </main>
   );
 }

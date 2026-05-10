@@ -4,4 +4,5 @@ export default [
   index("routes/home.tsx"),
   route("list", "routes/list.tsx"),
   route("hammer-of-wilderwood", "routes/hammer-of-wilderwood.tsx"),
+  route("initiative", "routes/initiative.tsx"),
 ] satisfies RouteConfig;
