@@ -10,6 +10,30 @@ export const SPAWN_INTERVAL_MS = 30_000;
 
 export const ALL_MODIFIERS: ModifierType[] = ["frost", "fire", "poison", "shield", "earthquake"];
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+export interface GameSettings {
+  maxHp: number;
+  fireDamage: number;
+  fireRolls: number;
+  frostSecs: number;
+  poisonRolls: number;
+  shieldHp: number;
+  earthquakeMult: number;
+  spawnIntervalSecs: number;
+}
+
+export const DEFAULT_SETTINGS: GameSettings = {
+  maxHp: 250,
+  fireDamage: 8,
+  fireRolls: 3,
+  frostSecs: 8,
+  poisonRolls: 3,
+  shieldHp: 25,
+  earthquakeMult: 2,
+  spawnIntervalSecs: 30,
+};
+
 export const MODIFIER_INFO: Record<ModifierType, { name: string; emoji: string; cls: string }> = {
   frost:      { name: "Frost",      emoji: "❄️", cls: "bg-blue-500/20 text-blue-300 border-blue-400/40" },
   fire:       { name: "Fire",       emoji: "🔥", cls: "bg-orange-500/20 text-orange-300 border-orange-400/40" },
@@ -59,15 +83,16 @@ export interface RoomState {
   phase: GamePhase;
   players: GamePlayer[];
   logs: string[];
+  settings: GameSettings;
 }
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
-export function makePlayer(id: number, name?: string): GamePlayer {
+export function makePlayer(id: number, name?: string, maxHp = MAX_HP): GamePlayer {
   return {
     id,
     name: name ?? `Player ${id + 1}`,
-    hp: MAX_HP,
+    hp: maxHp,
     status: { frozenUntil: 0, burningRolls: 0, poisonedRolls: 0, shieldHp: 0, earthquakeReady: false },
     modifierMap: {},
     dieFaceCount: 20,
@@ -100,6 +125,7 @@ export function processRoll(
   face: number,
   dieFaceCount: number,
   now: number,
+  settings: GameSettings = DEFAULT_SETTINGS,
 ): { players: GamePlayer[]; logs: string[] } {
   const roller = players.find(p => p.id === rollerId)!;
   const logs: string[] = [];
@@ -134,20 +160,20 @@ export function processRoll(
 
     switch (mod) {
       case "frost":
-        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, frozenUntil: now + FROST_MS } }; });
-        if (oppIdxs.length) logs.push(`  All opponents frozen for 8s!`);
+        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, frozenUntil: now + settings.frostSecs * 1000 } }; });
+        if (oppIdxs.length) logs.push(`  All opponents frozen for ${settings.frostSecs}s!`);
         break;
       case "fire":
-        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, burningRolls: ps[i].status.burningRolls + FIRE_ROLLS } }; });
-        if (oppIdxs.length) logs.push(`  All opponents are burning! (+${FIRE_DAMAGE} dmg × ${FIRE_ROLLS} rolls)`);
+        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, burningRolls: ps[i].status.burningRolls + settings.fireRolls } }; });
+        if (oppIdxs.length) logs.push(`  All opponents are burning! (+${settings.fireDamage} dmg × ${settings.fireRolls} rolls)`);
         break;
       case "poison":
-        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, poisonedRolls: ps[i].status.poisonedRolls + POISON_ROLLS } }; });
-        if (oppIdxs.length) logs.push(`  All opponents poisoned! (−50% dmg × ${POISON_ROLLS} rolls)`);
+        oppIdxs.forEach(i => { ps[i] = { ...ps[i], status: { ...ps[i].status, poisonedRolls: ps[i].status.poisonedRolls + settings.poisonRolls } }; });
+        if (oppIdxs.length) logs.push(`  All opponents poisoned! (−50% dmg × ${settings.poisonRolls} rolls)`);
         break;
       case "shield":
-        ps[ri] = { ...ps[ri], status: { ...ps[ri].status, shieldHp: ps[ri].status.shieldHp + SHIELD_HP } };
-        logs.push(`  🛡️ ${roller.name} gains a ${SHIELD_HP} HP shield!`);
+        ps[ri] = { ...ps[ri], status: { ...ps[ri].status, shieldHp: ps[ri].status.shieldHp + settings.shieldHp } };
+        logs.push(`  🛡️ ${roller.name} gains a ${settings.shieldHp} HP shield!`);
         break;
       case "earthquake":
         ps[ri] = { ...ps[ri], status: { ...ps[ri].status, earthquakeReady: true } };
@@ -158,9 +184,9 @@ export function processRoll(
 
   if (ps[ri].status.burningRolls > 0) {
     const before = ps[ri];
-    ps[ri] = { ...applyDamage(ps[ri], FIRE_DAMAGE), status: { ...ps[ri].status, burningRolls: ps[ri].status.burningRolls - 1 } };
-    const absorbed = FIRE_DAMAGE - (before.hp - ps[ri].hp);
-    const taken = FIRE_DAMAGE - Math.max(0, absorbed);
+    ps[ri] = { ...applyDamage(ps[ri], settings.fireDamage), status: { ...ps[ri].status, burningRolls: ps[ri].status.burningRolls - 1 } };
+    const absorbed = settings.fireDamage - (before.hp - ps[ri].hp);
+    const taken = settings.fireDamage - Math.max(0, absorbed);
     logs.push(`🔥 ${roller.name} takes ${taken} fire damage! (${ps[ri].status.burningRolls} rolls remaining)`);
     if (ps[ri].eliminated) logs.push(`💀 ${roller.name} was eliminated by fire!`);
   }
@@ -181,9 +207,9 @@ export function processRoll(
     logs.push(`☠️ ${roller.name} is poisoned — damage halved to ${damage}`);
   }
   if (ps[ri].status.earthquakeReady) {
-    damage *= 2;
+    damage = Math.round(damage * settings.earthquakeMult);
     ps[ri] = { ...ps[ri], status: { ...ps[ri].status, earthquakeReady: false } };
-    logs.push(`⚡ Earthquake! Damage doubled to ${damage}!`);
+    logs.push(`⚡ Earthquake! Damage ×${settings.earthquakeMult} to ${damage}!`);
   }
 
   ps
@@ -204,7 +230,7 @@ export function processRoll(
       const shieldAbsorbed = before.status.shieldHp - ps[oi].status.shieldHp;
       const actualDmg = incoming - shieldAbsorbed;
       if (shieldAbsorbed > 0) logs.push(`🛡️ ${before.name}'s shield absorbed ${shieldAbsorbed} damage!`);
-      logs.push(`⚔️ ${roller.name} rolled ${face} → ${actualDmg} dmg to ${before.name} (${ps[oi].hp}/${MAX_HP} HP)`);
+      logs.push(`⚔️ ${roller.name} rolled ${face} → ${actualDmg} dmg to ${before.name} (${ps[oi].hp}/${settings.maxHp} HP)`);
       if (ps[oi].eliminated) logs.push(`💀 ${before.name} has been eliminated!`);
     });
 

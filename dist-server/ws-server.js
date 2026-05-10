@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "url";
-import { makePlayer, processRoll, spawnModifiers, SPAWN_INTERVAL_MS, } from "./server/game-logic.js";
+import { makePlayer, processRoll, spawnModifiers, DEFAULT_SETTINGS, } from "./server/game-logic.js";
 const rooms = new Map();
 let nextPlayerId = 1;
 function generateRoomKey() {
@@ -40,7 +40,7 @@ function startSpawnTimer(roomKey) {
         const players = spawnModifiers(r.state.players, r.state.playerCount);
         r.state = { ...r.state, players, logs: ["✨ New modifiers spawned!", ...r.state.logs].slice(0, 50) };
         broadcastState(r);
-    }, SPAWN_INTERVAL_MS);
+    }, room.state.settings.spawnIntervalSecs * 1000);
 }
 function checkGameOver(room) {
     const alive = room.state.players.filter((p, i) => i < room.state.playerCount && !p.eliminated);
@@ -77,6 +77,7 @@ export function setupWss(wss) {
                     phase: "lobby-waiting",
                     players: [player],
                     logs: [],
+                    settings: { ...DEFAULT_SETTINGS },
                 };
                 const room = { state, connections: new Map([[playerId, ws]]), spawnTimer: null, cleanupTimer: null };
                 rooms.set(roomKey, room);
@@ -132,7 +133,9 @@ export function setupWss(wss) {
                     return;
                 }
                 const playerCount = room.state.players.length;
-                const players = spawnModifiers(room.state.players, playerCount);
+                const { maxHp } = room.state.settings;
+                const playersWithHp = room.state.players.map(p => ({ ...p, hp: maxHp }));
+                const players = spawnModifiers(playersWithHp, playerCount);
                 room.state = { ...room.state, phase: "playing", playerCount, players, logs: ["⚔️ The battle begins!"] };
                 broadcastState(room);
                 startSpawnTimer(myRoomKey);
@@ -143,7 +146,7 @@ export function setupWss(wss) {
                     return;
                 stopSpawnTimer(room);
                 const players = room.state.players.map((p, i) => {
-                    const fresh = makePlayer(i, p.name);
+                    const fresh = makePlayer(i, p.name, room.state.settings.maxHp);
                     fresh.id = p.id;
                     fresh.dieConnected = p.dieConnected;
                     fresh.dieName = p.dieName;
@@ -157,7 +160,7 @@ export function setupWss(wss) {
             if (msg.type === "roll") {
                 if (room.state.phase !== "playing")
                     return;
-                const { players, logs: newLogs } = processRoll(room.state.players, myPlayerId, msg.face, msg.dieFaceCount, Date.now());
+                const { players, logs: newLogs } = processRoll(room.state.players, myPlayerId, msg.face, msg.dieFaceCount, Date.now(), room.state.settings);
                 const logs = [...newLogs, ...room.state.logs].slice(0, 50);
                 room.state = { ...room.state, players, logs };
                 checkGameOver(room);
@@ -169,6 +172,26 @@ export function setupWss(wss) {
                     ? { ...p, dieConnected: msg.connected, dieName: msg.dieName ?? p.dieName }
                     : p);
                 room.state = { ...room.state, players };
+                broadcastState(room);
+                return;
+            }
+            if (msg.type === "update_settings") {
+                if (myPlayerId !== room.state.hostId || room.state.phase !== "lobby-waiting")
+                    return;
+                const s = msg.settings;
+                const clamp = (v, min, max) => v !== undefined ? Math.min(max, Math.max(min, v)) : undefined;
+                const merged = {
+                    ...room.state.settings,
+                    ...(s.maxHp !== undefined && { maxHp: clamp(s.maxHp, 50, 500) }),
+                    ...(s.fireDamage !== undefined && { fireDamage: clamp(s.fireDamage, 1, 50) }),
+                    ...(s.fireRolls !== undefined && { fireRolls: clamp(s.fireRolls, 1, 10) }),
+                    ...(s.frostSecs !== undefined && { frostSecs: clamp(s.frostSecs, 1, 60) }),
+                    ...(s.poisonRolls !== undefined && { poisonRolls: clamp(s.poisonRolls, 1, 10) }),
+                    ...(s.shieldHp !== undefined && { shieldHp: clamp(s.shieldHp, 5, 200) }),
+                    ...(s.earthquakeMult !== undefined && { earthquakeMult: clamp(s.earthquakeMult, 1, 10) }),
+                    ...(s.spawnIntervalSecs !== undefined && { spawnIntervalSecs: clamp(s.spawnIntervalSecs, 5, 120) }),
+                };
+                room.state = { ...room.state, settings: merged };
                 broadcastState(room);
                 return;
             }

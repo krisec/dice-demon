@@ -6,8 +6,8 @@ import { requestPixel } from "@systemic-games/pixels-web-connect";
 import { usePixelConnect, usePixelEvent } from "@systemic-games/pixels-react";
 import type { Pixel } from "@systemic-games/pixels-web-connect";
 import type { Route } from "./+types/hammer-of-wilderwood";
-import type { RoomState, GamePlayer, GamePhase, ModifierType, PlayerClass } from "../../server/game-logic";
-import { CLASS_INFO } from "../../server/game-logic";
+import type { RoomState, GamePlayer, GamePhase, ModifierType, PlayerClass, GameSettings } from "../../server/game-logic";
+import { CLASS_INFO, DEFAULT_SETTINGS } from "../../server/game-logic";
 import type { ClientMessage, ServerMessage } from "../../server/protocol";
 
 // ── Constants (display-only, game logic lives on the server) ─────────────────
@@ -28,6 +28,34 @@ const MODIFIER_INFO: Record<ModifierType, { name: string; emoji: string; cls: st
   shield:     { name: "Shield",     emoji: "🛡️", cls: "bg-gray-500/20 text-gray-300 border-gray-400/40" },
   earthquake: { name: "Earthquake", emoji: "⚡", cls: "bg-yellow-500/20 text-yellow-300 border-yellow-400/40" },
 };
+
+// ── Settings field config (for rendering the settings panel) ─────────────────
+
+const SETTING_GROUPS: Array<{
+  label: string;
+  fields: Array<{ key: keyof GameSettings; label: string; min: number; max: number; step: number; suffix?: string }>;
+}> = [
+  { label: "General", fields: [
+    { key: "maxHp",             label: "Max HP",               min: 50,  max: 500, step: 25 },
+    { key: "spawnIntervalSecs", label: "Modifier spawn every", min: 5,   max: 120, step: 5, suffix: "s" },
+  ]},
+  { label: "🔥 Fire", fields: [
+    { key: "fireDamage", label: "Damage per tick", min: 1, max: 50, step: 1 },
+    { key: "fireRolls",  label: "Ticks",           min: 1, max: 10, step: 1 },
+  ]},
+  { label: "❄️ Frost", fields: [
+    { key: "frostSecs", label: "Freeze duration", min: 1, max: 60, step: 1, suffix: "s" },
+  ]},
+  { label: "☠️ Poison", fields: [
+    { key: "poisonRolls", label: "Ticks (−50% dmg)", min: 1, max: 10, step: 1 },
+  ]},
+  { label: "🛡️ Shield", fields: [
+    { key: "shieldHp", label: "HP amount", min: 5, max: 200, step: 5 },
+  ]},
+  { label: "⚡ Earthquake", fields: [
+    { key: "earthquakeMult", label: "Damage multiplier", min: 1, max: 10, step: 0.5, suffix: "×" },
+  ]},
+];
 
 // ── WebSocket hook ────────────────────────────────────────────────────────────
 
@@ -283,6 +311,7 @@ function HammerGame() {
   const [lobbyName, setLobbyName] = useState("");
   const [joinKey, setJoinKey] = useState("");
   const [lobbyError, setLobbyError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Tick for freeze countdowns
   useEffect(() => {
@@ -403,6 +432,58 @@ function HammerGame() {
           {/* Player list */}
           <div className="flex flex-wrap gap-4">
             {slots}
+          </div>
+
+          {/* Settings panel */}
+          <div className="rounded-2xl border border-gray-700 bg-gray-900">
+            <button
+              onClick={() => setSettingsOpen(o => !o)}
+              className="flex w-full items-center justify-between px-5 py-3 text-sm text-gray-400 hover:text-white"
+            >
+              <span className="font-medium">⚙ Game Settings</span>
+              <span>{settingsOpen ? "▲" : "▼"}</span>
+            </button>
+            {settingsOpen && (
+              <div className="border-t border-gray-800 px-5 py-4 space-y-5">
+                {SETTING_GROUPS.map(group => (
+                  <div key={group.label}>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-gray-500">{group.label}</p>
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+                      {group.fields.map(field => {
+                        const current = room!.settings[field.key] as number;
+                        const isDefault = current === (DEFAULT_SETTINGS[field.key] as number);
+                        return (
+                          <label key={field.key} className="flex items-center justify-between gap-3">
+                            <span className={`text-sm ${isDefault ? "text-gray-400" : "text-white"}`}>
+                              {field.label}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                key={current}
+                                defaultValue={current}
+                                min={field.min}
+                                max={field.max}
+                                step={field.step}
+                                disabled={!isHost}
+                                onChange={e => {
+                                  const v = Number(e.target.value);
+                                  if (!isNaN(v) && v >= field.min && v <= field.max)
+                                    sendMsg({ type: "update_settings", settings: { [field.key]: v } });
+                                }}
+                                className="w-20 rounded-lg border border-gray-600 bg-gray-800 px-2 py-1 text-right text-sm text-white focus:border-gray-400 focus:outline-none disabled:opacity-50"
+                              />
+                              {field.suffix && <span className="text-xs text-gray-500">{field.suffix}</span>}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+                {!isHost && <p className="text-xs text-gray-600">Only the host can change settings.</p>}
+              </div>
+            )}
           </div>
 
           <div className="space-y-2">

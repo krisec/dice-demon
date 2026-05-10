@@ -4,7 +4,7 @@ import {
   makePlayer,
   processRoll,
   spawnModifiers,
-  SPAWN_INTERVAL_MS,
+  DEFAULT_SETTINGS,
   type GamePlayer,
   type GamePhase,
   type RoomState,
@@ -56,7 +56,7 @@ function startSpawnTimer(roomKey: string) {
     const players = spawnModifiers(r.state.players, r.state.playerCount);
     r.state = { ...r.state, players, logs: ["✨ New modifiers spawned!", ...r.state.logs].slice(0, 50) };
     broadcastState(r);
-  }, SPAWN_INTERVAL_MS);
+  }, room.state.settings.spawnIntervalSecs * 1000);
 }
 
 function checkGameOver(room: RoomEntry): boolean {
@@ -95,6 +95,7 @@ wss.on("connection", (ws) => {
         phase: "lobby-waiting",
         players: [player],
         logs: [],
+        settings: { ...DEFAULT_SETTINGS },
       };
       const room: RoomEntry = { state, connections: new Map([[playerId, ws]]), spawnTimer: null, cleanupTimer: null };
       rooms.set(roomKey, room);
@@ -138,7 +139,9 @@ wss.on("connection", (ws) => {
       if (room.state.players.length < 2) { send(ws, { type: "error", message: "Need at least 2 players" }); return; }
       if (room.state.players.some(p => !p.dieConnected)) { send(ws, { type: "error", message: "All players must connect their dice" }); return; }
       const playerCount = room.state.players.length;
-      const players = spawnModifiers(room.state.players, playerCount);
+      const { maxHp } = room.state.settings;
+      const playersWithHp = room.state.players.map(p => ({ ...p, hp: maxHp }));
+      const players = spawnModifiers(playersWithHp, playerCount);
       room.state = { ...room.state, phase: "playing", playerCount, players, logs: ["⚔️ The battle begins!"] };
       broadcastState(room);
       startSpawnTimer(myRoomKey);
@@ -149,7 +152,7 @@ wss.on("connection", (ws) => {
       if (myPlayerId !== room.state.hostId) return;
       stopSpawnTimer(room);
       const players = room.state.players.map((p, i) => {
-        const fresh = makePlayer(i, p.name);
+        const fresh = makePlayer(i, p.name, room.state.settings.maxHp);
         fresh.id = p.id;
         fresh.dieConnected = p.dieConnected;
         fresh.dieName = p.dieName;
@@ -163,7 +166,7 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "roll") {
       if (room.state.phase !== "playing") return;
-      const { players, logs: newLogs } = processRoll(room.state.players, myPlayerId, msg.face, msg.dieFaceCount, Date.now());
+      const { players, logs: newLogs } = processRoll(room.state.players, myPlayerId, msg.face, msg.dieFaceCount, Date.now(), room.state.settings);
       const logs = [...newLogs, ...room.state.logs].slice(0, 50);
       room.state = { ...room.state, players, logs };
       checkGameOver(room);
@@ -178,6 +181,27 @@ wss.on("connection", (ws) => {
           : p
       );
       room.state = { ...room.state, players };
+      broadcastState(room);
+      return;
+    }
+
+    if (msg.type === "update_settings") {
+      if (myPlayerId !== room.state.hostId || room.state.phase !== "lobby-waiting") return;
+      const s = msg.settings;
+      const clamp = (v: number | undefined, min: number, max: number) =>
+        v !== undefined ? Math.min(max, Math.max(min, v)) : undefined;
+      const merged = {
+        ...room.state.settings,
+        ...(s.maxHp !== undefined         && { maxHp:             clamp(s.maxHp, 50, 500)! }),
+        ...(s.fireDamage !== undefined     && { fireDamage:        clamp(s.fireDamage, 1, 50)! }),
+        ...(s.fireRolls !== undefined      && { fireRolls:         clamp(s.fireRolls, 1, 10)! }),
+        ...(s.frostSecs !== undefined      && { frostSecs:         clamp(s.frostSecs, 1, 60)! }),
+        ...(s.poisonRolls !== undefined    && { poisonRolls:       clamp(s.poisonRolls, 1, 10)! }),
+        ...(s.shieldHp !== undefined       && { shieldHp:          clamp(s.shieldHp, 5, 200)! }),
+        ...(s.earthquakeMult !== undefined && { earthquakeMult:    clamp(s.earthquakeMult, 1, 10)! }),
+        ...(s.spawnIntervalSecs !== undefined && { spawnIntervalSecs: clamp(s.spawnIntervalSecs, 5, 120)! }),
+      };
+      room.state = { ...room.state, settings: merged };
       broadcastState(room);
       return;
     }
