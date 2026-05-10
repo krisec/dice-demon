@@ -157,12 +157,13 @@ interface SlotProps {
   phase: GamePhase;
   now: number;
   sendMsg: (msg: ClientMessage) => void;
+  onSetClass?: (c: PlayerClass) => void;
 }
 
 const LARGE_DAMAGE_THRESHOLD = 15;
 const CPU_DIE_FACES = 20;
 
-function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps) {
+function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg, onSetClass }: SlotProps) {
   const [pixel, setPixel] = useState<Pixel | undefined>();
   const [reqErr, setReqErr] = useState<Error | undefined>();
   const [connStatus, curPixel, dispatch, connErr] = usePixelConnect(pixel);
@@ -246,6 +247,26 @@ function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps)
             </div>
             <p className="text-xs text-gray-500">{cls.emoji} {cls.name} — {cls.desc}</p>
           </div>
+        ) : onSetClass ? (
+          <div className="space-y-1.5">
+            <p className="text-xs text-gray-500">Class</p>
+            <div className="flex gap-1">
+              {(Object.keys(CLASS_INFO) as PlayerClass[]).map(c => {
+                const ci = CLASS_INFO[c];
+                return (
+                  <button key={c} title={ci.desc} onClick={() => onSetClass(c)}
+                    className={`flex-1 rounded-lg border py-1.5 text-xs font-medium transition-colors ${
+                      player.playerClass === c
+                        ? `${colors.border} ${colors.bg} ${colors.text}`
+                        : "border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300"
+                    }`}>
+                    {ci.emoji}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-500">{cls.emoji} {cls.name} — {cls.desc}</p>
+          </div>
         ) : (
           <p className="text-xs text-gray-400">{cls.emoji} {cls.name}</p>
         )}
@@ -261,9 +282,16 @@ function PlayerSlot({ slotIndex, player, isMe, phase, now, sendMsg }: SlotProps)
               <p className={`text-xs font-medium ${isConnected ? "text-green-400" : "text-gray-400"}`}>
                 {isConnected ? `✓ ${dieName || "Die"}` : (connStatus ?? "Connecting…")}
               </p>
-              <button onClick={disconnect} disabled={isBusy} className="w-full rounded-lg border border-gray-700 px-3 py-1 text-xs text-gray-500 hover:bg-gray-800 disabled:opacity-40">
-                Disconnect
-              </button>
+              <div className="flex gap-1.5">
+                {!isConnected && !isBusy && (
+                  <button onClick={connect} className="flex-1 rounded-lg bg-gray-700 px-3 py-1 text-xs text-gray-200 hover:bg-gray-600">
+                    Reconnect
+                  </button>
+                )}
+                <button onClick={disconnect} disabled={isBusy} className="flex-1 rounded-lg border border-gray-700 px-3 py-1 text-xs text-gray-500 hover:bg-gray-800 disabled:opacity-40">
+                  Disconnect
+                </button>
+              </div>
             </div>
           )
         )}
@@ -465,7 +493,11 @@ function SoloGame({ onBack }: { onBack: () => void }) {
 
   const slots = players.map((player, i) => (
     <PlayerSlot key={player.id} slotIndex={i} player={player} isMe={player.id === HUMAN_ID}
-      phase={phase} now={now} sendMsg={handleSendMsg} />
+      phase={phase} now={now} sendMsg={handleSendMsg}
+      onSetClass={player.id === CPU_ID && phase === "lobby-waiting"
+        ? (c) => setPlayers(ps => ps.map(p => p.id === CPU_ID ? { ...p, playerClass: c } : p))
+        : undefined}
+    />
   ));
 
   return (
@@ -532,8 +564,6 @@ function HammerGame() {
   const [lobbyError, setLobbyError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  if (soloMode) return <SoloGame onBack={() => setSoloMode(false)} />;
-
   // Tick for freeze countdowns
   useEffect(() => {
     if (room?.phase !== "playing") return;
@@ -546,6 +576,8 @@ function HammerGame() {
     if (!wsError) return;
     setLobbyError(wsError);
   }, [wsError]);
+
+  if (soloMode) return <SoloGame onBack={() => setSoloMode(false)} />;
 
   const phase = room?.phase ?? "lobby-entry";
   const myPlayer = room?.players.find(p => p.id === myId);
