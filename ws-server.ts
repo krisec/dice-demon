@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
+import { fileURLToPath } from "url";
 import {
   makePlayer,
   processRoll,
@@ -9,8 +10,6 @@ import {
   type RoomState,
 } from "./server/game-logic.js";
 import type { ClientMessage, ServerMessage } from "./server/protocol.js";
-
-const PORT = Number(process.env.WS_PORT ?? 3001);
 
 interface RoomEntry {
   state: RoomState;
@@ -70,8 +69,7 @@ function checkGameOver(room: RoomEntry): boolean {
   return false;
 }
 
-const wss = new WebSocketServer({ port: PORT });
-
+export function setupWss(wss: WebSocketServer) {
 wss.on("connection", (ws) => {
   let myRoomKey: string | null = null;
   let myPlayerId: number | null = null;
@@ -202,6 +200,13 @@ wss.on("connection", (ws) => {
       broadcastState(room);
     }
   });
-});
+}); // wss.on("connection")
+} // setupWss
 
-console.log(`WS server listening on ws://localhost:${PORT}`);
+// Standalone dev mode — only runs when invoked directly via `tsx watch ws-server.ts`
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const PORT = Number(process.env.WS_PORT ?? 3001);
+  const wss = new WebSocketServer({ port: PORT });
+  setupWss(wss);
+  console.log(`WS server listening on ws://localhost:${PORT}`);
+}

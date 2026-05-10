@@ -41,7 +41,7 @@ function useGameSocket() {
     if (wsRef.current) return;
     const url = import.meta.env.DEV
       ? "ws://localhost:3001"
-      : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:3001`;
+      : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
     try {
       const ws = new WebSocket(url);
       wsRef.current = ws;
