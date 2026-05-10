@@ -549,6 +549,14 @@ function HammerGame() {
                                   if (!isNaN(v) && v >= field.min && v <= field.max)
                                     sendMsg({ type: "update_settings", settings: { [field.key]: v } });
                                 }}
+                                onBlur={e => {
+                                  const raw = Number(e.target.value);
+                                  const clamped = isNaN(raw)
+                                    ? current
+                                    : Math.min(field.max, Math.max(field.min, raw));
+                                  e.target.value = String(clamped);
+                                  sendMsg({ type: "update_settings", settings: { [field.key]: clamped } });
+                                }}
                                 className="w-20 rounded-lg border border-gray-600 bg-gray-800 px-2 py-1 text-right text-sm text-white focus:border-gray-400 focus:outline-none disabled:opacity-50"
                               />
                               {field.suffix && <span className="text-xs text-gray-500">{field.suffix}</span>}
