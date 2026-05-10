@@ -25,6 +25,7 @@
   animation: damage-flash 0.7s ease-out forwards;
 }
 
+
 html,
 body {
   @apply bg-white dark:bg-gray-950;
