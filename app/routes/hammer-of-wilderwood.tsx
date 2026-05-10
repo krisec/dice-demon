@@ -460,7 +460,6 @@ function HammerGame() {
                             <div className="flex items-center gap-1">
                               <input
                                 type="number"
-                                key={current}
                                 defaultValue={current}
                                 min={field.min}
                                 max={field.max}
